@@ -1,1 +1,31 @@
 @import "tailwindcss";
+
+
+@theme {
+    --animate-animStar50: animStar 50s linear infinite;
+    --animate-animStar100: animStar 100s linear infinite;
+    --animate-animStar150: animStar 150s linear infinite;
+    --animate-introFadeUp: introFadeUp 1.2s ease-out forwards;
+
+    @keyframes animStar {
+        from {
+            transform: translateY(0px);
+        }
+
+        to {
+            transform: translateY(-2000px);
+        }
+    }
+
+    @keyframes introFadeUp {
+        0% {
+            opacity: 0;
+            transform: translateY(30px);
+        }
+
+        100% {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+}
