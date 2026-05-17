@@ -1,14 +1,54 @@
 import Button from "../components/Button";
 import Background from "../components/Background";
 import Webcam from "react-webcam";
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import memes from "../data/memes.json";
 
+function normalizePose(pose) { // normalize the pose landmarks to be relative to the hips and scale invariant
+    if (!pose) return null;
+
+    // use hips as center point
+    const leftHip = pose[23];
+    const rightHip = pose[24];
+    if (!leftHip || !rightHip) return pose;
+
+    const centerX = (leftHip.x + rightHip.x) / 2;
+    const centerY = (leftHip.y + rightHip.y) / 2;
+
+    return pose.map(p => ({
+        x: p.x - centerX,
+        y: p.y - centerY
+    }));
+}
+
+function comparePoses(userPose, memePose) {
+    if (!userPose || !memePose) return 0;
+    const u = normalizePose(userPose);
+    const m = normalizePose(memePose);
+
+    let total = 0;
+    let count = 0;
+    for (let i = 0; i < m.length; i++) {
+        if (!u[i] || !m[i]) continue;
+        const dx = m[i].x - u[i].x;
+        const dy = m[i].y - u[i].y;
+        total += Math.sqrt(dx * dx + dy * dy);
+        count++;
+    }
+
+    const avg = total / count;
+
+    // smoother scoring curve (IMPORTANT)
+    return Math.exp(-avg * 6);
+}
 export default function Game() {
     const navigate = useNavigate();
     const webcamRef = useRef(null);
     const canvasRef = useRef(null);
+    const canScoreRef = useRef(true);
+    const currentIndexRef = useRef(0);
+    const holdRef = useRef(0); // to hold the pose for a few frames to make scoring more forgiving
 
     const [currentIndex, setCurrentIndex] = useState(0);
     const [score, setScore] = useState(0);
@@ -17,6 +57,13 @@ export default function Game() {
     useEffect(() => {
         setupPoseDetection();
     }, []);
+
+    useEffect(() => {
+        currentIndexRef.current = currentIndex;
+    }, [currentIndex]);
+    function nextMeme() {
+        setCurrentIndex((prev) => (prev + 1) % memes.length);
+    }
 
     async function setupPoseDetection() {
         const vision = await import("@mediapipe/tasks-vision"); // importing the vision module from mediapipe
@@ -41,15 +88,45 @@ export default function Game() {
     }
 
     async function detect(poseLandmarker) {
-        async function frameLandmarks() { // function to detect the landmarks in each frame of the video
-            if (webcamRef.current && webcamRef.current.video.readyState === 4) {
-                const video = webcamRef.current.video; //get video frame from webcam
-                const results = poseLandmarker.detectForVideo( // running the detection using the detectForVideo method of the model
+        async function frameLandmarks() {
+            if (
+                webcamRef.current &&
+                webcamRef.current.video.readyState === 4
+            ) {
+                const video = webcamRef.current.video;
+
+                const results = poseLandmarker.detectForVideo(
                     video,
-                    performance.now() // passing the current timestamp for accurate detection
+                    performance.now()
                 );
-                drawLandmarks(results.landmarks); // function to draw the landmarks on the canvas
+
+                const userPose = results.landmarks?.[0];
+                const memePose = memes[currentIndexRef.current]?.pose; // the current meme pose we are trying to match
+
+                drawLandmarks(results.landmarks);
+
+                const matchScore = comparePoses(userPose, memePose);
+
+                if (matchScore > 0.65) {
+                    holdRef.current += 1;
+                } else {
+                    holdRef.current = 0;
+                }
+
+                if (holdRef.current > 7 && canScoreRef.current) {
+                    canScoreRef.current = false;
+
+                    setScore(prev => prev + 1);
+                    nextMeme();
+
+                    holdRef.current = 0;
+
+                    setTimeout(() => {
+                        canScoreRef.current = true;
+                    }, 1200);
+                }
             }
+
             requestAnimationFrame(frameLandmarks);
         }
         frameLandmarks();
@@ -78,10 +155,9 @@ export default function Game() {
             [24, 26], [26, 28], // right leg
         ];
 
-        // 🪞 mirror X (
-        const getX = (x) => (1 - x) * w;
+        //  mirror X (
+        const getX = (x) => x * w;
         const getY = (y) => y * h;
-
         // DRAW LINES
         ctx.strokeStyle = "white";
         ctx.lineWidth = 2;
@@ -111,15 +187,22 @@ export default function Game() {
     return (
         <>
             <Background>
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 text-white text-2xl font-bold z-50">
+                    Score: {score}
+                </div>
                 <div className="flex flex-row justify-center items-center gap-7 h-screen animate-introFadeUp text-white">
-                    <div className="bg-[#090a0f] w-[40%] h-[70%] rounded-4xl">
-                        {/* <img src="" alt="image" /> */}
+                    <div className="bg-[#090a0f] w-[40%] h-[70%] rounded-4xl flex flex-col items-center justify-center gap-4">
+                        <img
+                            src={memes[currentIndex].image}
+                            alt={memes[currentIndex].name}
+                            className="w-full h-full object-contain rounded-2xl"
+                        />
                     </div>
                     <div className="bg-[#090a0f] w-[40%] h-[70%] rounded-4xl flex justify-center items-center">
                         <div className="relative w-[800px] h-[520px]">
                             <Webcam
                                 ref={webcamRef}
-                                mirrored={true}
+                                mirrored={false}
                                 audio={false}
                                 screenshotFormat="image/jpeg"
                                 videoConstraints={{
