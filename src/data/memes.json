@@ -1,0 +1,22 @@
+[
+    {
+        "name": "T Pose",
+        "image": "/memes/tpose.png",
+        "pose": "TPOSE"
+    },
+    {
+        "name": "Dab",
+        "image": "/memes/dab.png",
+        "pose": "DAB"
+    },
+    {
+        "name": "Victory Pose",
+        "image": "/memes/victory.png",
+        "pose": "VICTORY"
+    },
+    {
+        "name": "Squat",
+        "image": "/memes/squat.png",
+        "pose": "SQUAT"
+    }
+]
