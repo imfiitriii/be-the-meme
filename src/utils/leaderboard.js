@@ -18,10 +18,20 @@ export function getLeaderboard(game) {
 export function addEntry(game, entry) {
     // entry: { name, score, date } for meme, { name, wpm, accuracy, date } for typing
     const board = getLeaderboard(game);
-    board.push({ ...entry, date: new Date().toISOString() });
+    const sortKey = game === "typing" ? "wpm" : "score";
+
+    const existingIndex = board.findIndex(e => e.name === entry.name);
+
+    if (existingIndex !== -1) {
+        // Only update existing entry if the new score is better
+        if (entry[sortKey] > board[existingIndex][sortKey]) {
+            board[existingIndex] = { ...entry, date: new Date().toISOString() };
+        }
+    } else {
+        board.push({ ...entry, date: new Date().toISOString() });
+    }
 
     // Sort by score (meme) or wpm (typing), descending
-    const sortKey = game === "typing" ? "wpm" : "score";
     board.sort((a, b) => b[sortKey] - a[sortKey]);
 
     // Keep top 10

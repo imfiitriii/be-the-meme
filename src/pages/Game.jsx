@@ -76,6 +76,24 @@ function comparePoses(userPose, memePose) {
     return Math.exp(-avg * 3);
 }
 
+function mirrorPose(pose) {
+    if (!pose) return null;
+    const mirrored = pose.map(p => ({ ...p, x: 1 - p.x }));
+    const swapPairs = [
+        [1, 4], [2, 5], [3, 6], [7, 8], [9, 10], // face
+        [11, 12], [13, 14], [15, 16], [17, 18], [19, 20], [21, 22], // arms
+        [23, 24], [25, 26], [27, 28], [29, 30], [31, 32] // legs
+    ];
+    for (const [left, right] of swapPairs) {
+        if (mirrored[left] && mirrored[right]) {
+            const temp = mirrored[left];
+            mirrored[left] = mirrored[right];
+            mirrored[right] = temp;
+        }
+    }
+    return mirrored;
+}
+
 // Helper to load an image as an HTMLImageElement
 function loadImage(src) {
     return new Promise((resolve, reject) => {
@@ -116,6 +134,8 @@ export default function Game() {
     const timerRef = useRef(null);
     const streakRef = useRef(0);
     const playerNameRef = useRef("");
+    const scoreRef = useRef(0);
+    const bestStreakRef = useRef(0);
 
     // Start extraction only after name is entered
     useEffect(() => {
@@ -158,12 +178,12 @@ export default function Game() {
             if (next >= memesRef.current.length) {
                 // Save to leaderboard and go to Game Over
                 setTimeout(() => {
-                    addEntry("meme", { name: playerNameRef.current, score });
+                    addEntry("meme", { name: playerNameRef.current, score: scoreRef.current });
                     navigate("/gameover", {
                         state: {
                             name: playerNameRef.current,
-                            score,
-                            streak: bestStreak,
+                            score: scoreRef.current,
+                            streak: bestStreakRef.current,
                             total: memesRef.current.length,
                         },
                     });
@@ -299,15 +319,16 @@ export default function Game() {
                     performance.now()
                 );
 
-                const userPose = results.landmarks?.[0];
+                const rawUserPose = results.landmarks?.[0];
+                const userPose = mirrorPose(rawUserPose);
                 const memePose = memesRef.current[currentIndexRef.current]?.pose;
 
-                drawLandmarks(results.landmarks);
+                drawLandmarks(userPose ? [userPose] : []);
 
                 const matchScore = comparePoses(userPose, memePose);
                 setMatchScore(matchScore);
 
-                if (matchScore > 0.80) {
+                if (matchScore > 0.70) {
                     holdRef.current += 1;
                 } else {
                     holdRef.current = 0;
@@ -316,14 +337,22 @@ export default function Game() {
                 if (holdRef.current > 15 && canScoreRef.current) {
                     canScoreRef.current = false;
 
-                    setScore(prev => prev + 1);
+                    setScore(prev => {
+                        const newScore = prev + 1;
+                        scoreRef.current = newScore;
+                        return newScore;
+                    });
                     setShowScorePopup(true);
 
                     // Streak
                     streakRef.current += 1;
                     const newStreak = streakRef.current;
                     setStreak(newStreak);
-                    setBestStreak(prev => Math.max(prev, newStreak));
+                    setBestStreak(prev => {
+                        const newBest = Math.max(prev, newStreak);
+                        bestStreakRef.current = newBest;
+                        return newBest;
+                    });
 
                     // Sounds
                     playScore();
@@ -391,8 +420,8 @@ export default function Game() {
             [24, 26], [26, 28], // right leg
         ];
 
-        // Flip X to match the mirrored webcam display
-        const getX = (x) => (1 - x) * w;
+        // X is already flipped by mirrorPose to match the mirrored webcam display
+        const getX = (x) => x * w;
         const getY = (y) => y * h;
 
         // DRAW LINES
@@ -490,7 +519,7 @@ export default function Game() {
     const accentColor = GDSC_ACCENTS[currentIndex % GDSC_ACCENTS.length];
 
     const matchPct = Math.round(matchScore * 100);
-    const barColor = matchScore > 0.80
+    const barColor = matchScore > 0.70
         ? "#34A853"
         : matchScore > 0.50
         ? "#FBBC04"
@@ -644,7 +673,7 @@ export default function Game() {
                         style={{
                             background: "#0d0f18",
                             border: `1.5px solid rgba(255,255,255,0.07)`,
-                            boxShadow: matchScore > 0.80
+                            boxShadow: matchScore > 0.70
                                 ? `0 0 0 2px #34A85388, 0 8px 40px rgba(0,0,0,0.6)`
                                 : `0 0 0 2px rgba(255,255,255,0.04), 0 8px 40px rgba(0,0,0,0.6)`,
                             transition: "box-shadow 0.3s",
@@ -692,13 +721,13 @@ export default function Game() {
                                     style={{
                                         width: `${matchPct}%`,
                                         background: `linear-gradient(90deg, ${barColor}99, ${barColor})`,
-                                        boxShadow: matchScore > 0.80 ? `0 0 12px 3px ${barColor}88` : "none",
+                                        boxShadow: matchScore > 0.70 ? `0 0 12px 3px ${barColor}88` : "none",
                                         transition: "width 0.1s, background 0.2s, box-shadow 0.2s",
                                     }}
                                 />
                             </div>
                             <p className="text-center text-white/25 text-xs mt-2 font-semibold">
-                                {matchScore > 0.80 ? "🟢 Hold it..." : matchScore > 0.50 ? "🟡 Getting close!" : "🔴 Strike the pose!"}
+                                {matchScore > 0.70 ? "🟢 Hold it..." : matchScore > 0.50 ? "🟡 Getting close!" : "🔴 Strike the pose!"}
                             </p>
                         </div>
                     </div>

@@ -10,6 +10,9 @@ const ASSET_IMAGES = [
     { file: "pointing_himself.png",name: "Who Me?" },
     { file: "shocked.png",         name: "Shocked" },
     { file: "cinema.png",          name: "Absolute Cinema" },
+    { file: "confused.png",        name: "Confused" },
+    { file: "67.png",              name: "67" },
+    { file: "siuuu.png",            name: "Siuuu" }
 ];
 
 export default function BuildPose() {
