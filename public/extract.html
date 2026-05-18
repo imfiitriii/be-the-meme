@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head><title>Pose Extract</title></head>
+<body>
+<div id="status">Loading...</div>
+<pre id="output"></pre>
+<script type="module">
+const IMAGES = [
+    { file: "pointing.png",        name: "Pointing" },
+    { file: "arms_up.png",         name: "Hands Up!" },
+    { file: "facepalm.png",        name: "Facepalm" },
+    { file: "shrug.png",           name: "IDK Shrug" },
+    { file: "pointing_himself.png",name: "Who Me?" },
+    { file: "shocked.png",         name: "Shocked" },
+    { file: "cinema.png",          name: "Absolute Cinema" },
+];
+
+function loadImage(src) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+    });
+}
+
+async function run() {
+    const status = document.getElementById("status");
+    const output = document.getElementById("output");
+
+    status.textContent = "Loading MediaPipe model...";
+    const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest");
+    const filesetResolver = await vision.FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    );
+    const poseLandmarker = await vision.PoseLandmarker.createFromOptions(filesetResolver, {
+        baseOptions: {
+            modelAssetPath:
+                "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        },
+        runningMode: "IMAGE",
+    });
+
+    const results = [];
+    for (const img of IMAGES) {
+        status.textContent = `Extracting: ${img.name} (${img.file})...`;
+        try {
+            const htmlImg = await loadImage(`/assets/${img.file}`);
+            const result = poseLandmarker.detect(htmlImg);
+            const pose = result.landmarks?.[0] ?? null;
+            if (pose) {
+                results.push({ name: img.name, image: `/assets/${img.file}`, pose });
+                status.textContent = `✅ ${img.name}`;
+            } else {
+                status.textContent = `⚠️ ${img.name} - no pose detected`;
+            }
+        } catch(e) {
+            status.textContent = `❌ ${img.name} - error`;
+        }
+    }
+
+    status.textContent = `Done! ${results.length}/${IMAGES.length} poses extracted. Copy the JSON below.`;
+    const json = JSON.stringify(results, null, 2);
+    output.textContent = json;
+    console.log("POSE_JSON_START");
+    console.log(json);
+    console.log("POSE_JSON_END");
+}
+
+run();
+</script>
+</body>
+</html>

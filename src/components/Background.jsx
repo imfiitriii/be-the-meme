@@ -13,9 +13,9 @@ export default function Background({ children }) {
 
         return shadows.join(", ");
     }
-    const STAR_1 = generateBoxShadow(400, 2000, 2000); // small stars
-    const STAR_2 = generateBoxShadow(250, 2000, 2000); // medium
-    const STAR_3 = generateBoxShadow(120, 2000, 2000); // big stars
+    const STAR_1 = generateBoxShadow(400, 2000, 2000);
+    const STAR_2 = generateBoxShadow(250, 2000, 2000);
+    const STAR_3 = generateBoxShadow(120, 2000, 2000);
     return (
         <div className="relative w-full h-full overflow-hidden bg-[radial-gradient(ellipse_at_bottom,#1b2735_0%,#090a0f_100%)]">
 
@@ -39,6 +39,10 @@ export default function Background({ children }) {
                 className="absolute top-0 left-0 w-[3px] h-[3px] bg-transparent animate-animStar150"
                 style={{ boxShadow: STAR_3 }}
             />
+
+            {/* GDSC color horizon glow */}
+            <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-gradient-to-r from-[#EA4335] via-[#4285F4] via-50% via-[#FBBC04] to-[#34A853] opacity-70 z-10" />
+            <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-[#090a0f]/60 to-transparent pointer-events-none z-10" />
 
             {children}
         </div>
