@@ -4,6 +4,7 @@
 const STORAGE_KEYS = {
     meme: "btm_leaderboard_meme",
     typing: "btm_leaderboard_typing",
+    mirror: "btm_leaderboard_mirror",
 };
 
 export function getLeaderboard(game) {

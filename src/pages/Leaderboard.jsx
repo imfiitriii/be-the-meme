@@ -12,8 +12,9 @@ export default function Leaderboard() {
 
     const memeBoard = getLeaderboard("meme");
     const typingBoard = getLeaderboard("typing");
+    const mirrorBoard = getLeaderboard("mirror");
 
-    const board = activeTab === "meme" ? memeBoard : typingBoard;
+    const board = activeTab === "meme" ? memeBoard : activeTab === "typing" ? typingBoard : mirrorBoard;
 
     return (
         <Background>
@@ -35,6 +36,7 @@ export default function Leaderboard() {
                     {[
                         { id: "meme", label: "🎭 Be The Meme", color: "#4285F4" },
                         { id: "typing", label: "⌨️ Typing Race", color: "#34A853" },
+                        { id: "mirror", label: "🪞 Mirror Match", color: "#EA4335" },
                     ].map(tab => (
                         <button
                             key={tab.id}

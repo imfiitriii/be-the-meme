@@ -1,0 +1,468 @@
+import Background from "../components/Background";
+import Webcam from "react-webcam";
+import { useRef, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { addEntry } from "../utils/leaderboard";
+import { playScore, playTick, playTimeout, playGameOver } from "../utils/sounds";
+
+const VISIBILITY_THRESHOLD = 0.5;
+const ROUNDS = 5;
+const LOCK_HOLD = 40;   // frames player 1 must hold to lock pose (~1.3s)
+const COPY_TIME = 6;    // seconds player 2 has to copy
+
+// ── Pose helpers ────────────────────────────────────────────────────────────
+function normalizePose(pose) {
+    if (!pose) return null;
+    const lh = pose[23], rh = pose[24];
+    if (!lh || !rh) return pose;
+    const cx = (lh.x + rh.x) / 2, cy = (lh.y + rh.y) / 2;
+    const ls = pose[11], rs = pose[12];
+    const scx = ls && rs ? (ls.x + rs.x) / 2 : cx;
+    const scy = ls && rs ? (ls.y + rs.y) / 2 : cy;
+    const scale = Math.max(0.01, Math.sqrt((scx - cx) ** 2 + (scy - cy) ** 2));
+    return pose.map(p => ({ x: (p.x - cx) / scale, y: (p.y - cy) / scale, visibility: p.visibility ?? 1 }));
+}
+
+function comparePoses(a, b) {
+    if (!a || !b) return 0;
+    const na = normalizePose(a), nb = normalizePose(b);
+    let total = 0, count = 0;
+    for (let i = 11; i < na.length; i++) {
+        if (!na[i] || !nb[i]) continue;
+        if ((na[i].visibility ?? 1) < VISIBILITY_THRESHOLD) continue;
+        if ((nb[i].visibility ?? 1) < VISIBILITY_THRESHOLD) continue;
+        const dx = na[i].x - nb[i].x, dy = na[i].y - nb[i].y;
+        total += Math.sqrt(dx * dx + dy * dy);
+        count++;
+    }
+    if (count === 0) return 0;
+    return Math.exp(-(total / count) * 3);
+}
+
+const CONNECTIONS = [
+    [11,13],[13,15],[15,17],[15,19],[15,21],
+    [12,14],[14,16],[16,18],[16,20],[16,22],
+    [11,12],[11,23],[12,24],[23,24],
+    [23,25],[25,27],[24,26],[26,28],
+];
+
+// Split landmarks: left half of frame → player 1, right half → player 2
+function splitPoses(poses, videoWidth) {
+    if (!poses || poses.length === 0) return [null, null];
+    if (poses.length === 1) {
+        // Assign by hip center x
+        const p = poses[0];
+        const hipX = p[23] ? (p[23].x + (p[24]?.x ?? p[23].x)) / 2 : 0.5;
+        return hipX < 0.5 ? [p, null] : [null, p];
+    }
+    // Sort by hip center x
+    const sorted = [...poses].sort((a, b) => {
+        const ax = a[23] ? (a[23].x + (a[24]?.x ?? a[23].x)) / 2 : 0.5;
+        const bx = b[23] ? (b[23].x + (b[24]?.x ?? b[23].x)) / 2 : 0.5;
+        return ax - bx;
+    });
+    return [sorted[0], sorted[1]];
+}
+
+function drawSkeleton(ctx, pose, w, h, color, mirror = false) {
+    if (!pose) return;
+    const gx = (x) => mirror ? (1 - x) * w : x * w;
+    const gy = (y) => y * h;
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    CONNECTIONS.forEach(([a, b]) => {
+        const p1 = pose[a], p2 = pose[b];
+        if (!p1 || !p2) return;
+        if ((p1.visibility ?? 1) < VISIBILITY_THRESHOLD) return;
+        if ((p2.visibility ?? 1) < VISIBILITY_THRESHOLD) return;
+        ctx.beginPath();
+        ctx.moveTo(gx(p1.x), gy(p1.y));
+        ctx.lineTo(gx(p2.x), gy(p2.y));
+        ctx.stroke();
+    });
+    pose.forEach((pt, i) => {
+        if (i <= 10) return;
+        if ((pt.visibility ?? 1) < VISIBILITY_THRESHOLD) return;
+        ctx.beginPath();
+        ctx.arc(gx(pt.x), gy(pt.y), 5, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+    });
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
+export default function MirrorMatch() {
+    const navigate = useNavigate();
+    const webcamRef = useRef(null);
+    const canvasRef = useRef(null);
+    const animRef = useRef(null);
+
+    // Names
+    const [p1Name, setP1Name] = useState("");
+    const [p2Name, setP2Name] = useState("");
+    const [phase, setPhase] = useState("names"); // names | loading | locking | copying | result | done
+
+    // Game state
+    const [round, setRound] = useState(1);
+    const [scores, setScores] = useState([0, 0]); // [p1score, p2score]
+    const [copyTimeLeft, setCopyTimeLeft] = useState(COPY_TIME);
+    const [matchPct, setMatchPct] = useState(0);
+    const [roundResult, setRoundResult] = useState(null); // { winner, pct }
+    const [lockProgress, setLockProgress] = useState(0); // 0-100
+
+    // Refs for game loop
+    const phaseRef = useRef("names");
+    const round1Ref = useRef(1);
+    const lockHoldRef = useRef(0);
+    const lockedPoseRef = useRef(null);  // frozen P1 pose
+    const copyTimerRef = useRef(null);
+    const scoresRef = useRef([0, 0]);
+
+    function setPhaseSync(p) { phaseRef.current = p; setPhase(p); }
+
+    // ── Loading ──────────────────────────────────────────────────────────────
+    const [landmarker, setLandmarker] = useState(null);
+
+    async function startLoading() {
+        setPhaseSync("loading");
+        const vision = await import("@mediapipe/tasks-vision");
+        const fr = await vision.FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        const lm = await vision.PoseLandmarker.createFromOptions(fr, {
+            baseOptions: {
+                modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+            },
+            runningMode: "VIDEO",
+            numPoses: 2,
+        });
+        setLandmarker(lm);
+        setPhaseSync("locking");
+        startLoop(lm);
+    }
+
+    // ── Game loop ────────────────────────────────────────────────────────────
+    function startLoop(lm) {
+        function loop() {
+            const video = webcamRef.current?.video;
+            const canvas = canvasRef.current;
+            if (!video || video.readyState < 4 || !canvas) {
+                animRef.current = requestAnimationFrame(loop);
+                return;
+            }
+
+            // Sync canvas
+            if (canvas.width !== video.videoWidth) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            }
+
+            const res = lm.detectForVideo(video, performance.now());
+            const [pose1, pose2] = splitPoses(res.landmarks, video.videoWidth);
+
+            const ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (phaseRef.current === "locking") {
+                // Draw both skeletons in dim mode
+                drawSkeleton(ctx, pose1, canvas.width, canvas.height, "rgba(66,133,244,0.8)", true);
+                drawSkeleton(ctx, pose2, canvas.width, canvas.height, "rgba(234,67,53,0.8)", true);
+
+                // P1 must hold — track frames both landmarks detected and stable
+                if (pose1) {
+                    lockHoldRef.current++;
+                    setLockProgress(Math.min(100, Math.round((lockHoldRef.current / LOCK_HOLD) * 100)));
+                    if (lockHoldRef.current >= LOCK_HOLD) {
+                        lockedPoseRef.current = pose1;
+                        lockHoldRef.current = 0;
+                        setLockProgress(0);
+                        startCopyPhase();
+                    }
+                } else {
+                    lockHoldRef.current = Math.max(0, lockHoldRef.current - 2);
+                    setLockProgress(Math.max(0, Math.round((lockHoldRef.current / LOCK_HOLD) * 100)));
+                }
+            } else if (phaseRef.current === "copying") {
+                // Draw locked P1 pose ghosted (green)
+                drawSkeleton(ctx, lockedPoseRef.current, canvas.width, canvas.height, "rgba(52,168,83,0.4)", true);
+                // Draw live P2 skeleton (yellow)
+                drawSkeleton(ctx, pose2, canvas.width, canvas.height, "rgba(251,188,4,0.9)", true);
+
+                const pct = comparePoses(lockedPoseRef.current, pose2);
+                setMatchPct(Math.round(pct * 100));
+            }
+
+            animRef.current = requestAnimationFrame(loop);
+        }
+        animRef.current = requestAnimationFrame(loop);
+    }
+
+    function startCopyPhase() {
+        setPhaseSync("copying");
+        setCopyTimeLeft(COPY_TIME);
+        let t = COPY_TIME;
+        copyTimerRef.current = setInterval(() => {
+            t--;
+            if (t <= 3) playTick();
+            setCopyTimeLeft(t);
+            if (t <= 0) {
+                clearInterval(copyTimerRef.current);
+                endRound();
+            }
+        }, 1000);
+    }
+
+    function endRound() {
+        setPhaseSync("result");
+        // Read final match pct from state via ref trick
+        const pct = Math.round(comparePoses(lockedPoseRef.current, null) * 100); // fallback
+        // We'll use the last setMatchPct value — read via a dedicated ref
+        const finalPct = lastMatchRef.current;
+
+        // Determine who scored: copier (P2 when round is odd, P1 when even) scores if pct > 60
+        const isP1Copying = round1Ref.current % 2 === 0;
+        const winner = finalPct >= 60 ? (isP1Copying ? 0 : 1) : -1;
+
+        const newScores = [...scoresRef.current];
+        if (winner >= 0) {
+            newScores[winner]++;
+            scoresRef.current = newScores;
+            setScores([...newScores]);
+            playScore();
+        } else {
+            playTimeout();
+        }
+
+        setRoundResult({ winner, pct: finalPct, isP1Copying });
+
+        // After 2.5s move to next round or end
+        setTimeout(() => {
+            const nextRound = round1Ref.current + 1;
+            if (nextRound > ROUNDS) {
+                cancelAnimationFrame(animRef.current);
+                setPhaseSync("done");
+                playGameOver();
+                const w = newScores[0] > newScores[1] ? p1Name : newScores[1] > newScores[0] ? p2Name : "Draw";
+                const topScore = Math.max(newScores[0], newScores[1]);
+                addEntry("mirror", { name: w, score: topScore });
+            } else {
+                round1Ref.current = nextRound;
+                setRound(nextRound);
+                setRoundResult(null);
+                lockHoldRef.current = 0;
+                lockedPoseRef.current = null;
+                setPhaseSync("locking");
+            }
+        }, 2500);
+    }
+
+    // Track last match % via ref so endRound can read it
+    const lastMatchRef = useRef(0);
+    useEffect(() => { lastMatchRef.current = matchPct; }, [matchPct]);
+
+    useEffect(() => {
+        return () => {
+            cancelAnimationFrame(animRef.current);
+            clearInterval(copyTimerRef.current);
+        };
+    }, []);
+
+    // ── Who is poser / copier this round ─────────────────────────────────────
+    const isP1Poser = round % 2 === 1; // odd rounds: P1 poses, P2 copies
+    const poserName = isP1Poser ? p1Name : p2Name;
+    const copierName = isP1Poser ? p2Name : p1Name;
+
+    // ── NAMES screen ─────────────────────────────────────────────────────────
+    if (phase === "names") {
+        const ready = p1Name.trim() && p2Name.trim();
+        return (
+            <Background>
+                <div className="flex flex-col items-center justify-center h-screen gap-6 text-white animate-introFadeUp z-20 relative">
+                    <div className="text-7xl animate-float">🪞</div>
+                    <h1 className="text-5xl font-black" style={{
+                        background: "linear-gradient(135deg, #fff, #EA4335)",
+                        WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text"
+                    }}>Mirror Match</h1>
+                    <p className="text-white/50 font-semibold">Two players · One camera · {ROUNDS} rounds</p>
+
+                    <div className="flex gap-8 mt-2">
+                        {[
+                            { label: "Player 1 🔵", val: p1Name, set: setP1Name, color: "#4285F4" },
+                            { label: "Player 2 🔴", val: p2Name, set: setP2Name, color: "#EA4335" },
+                        ].map(({ label, val, set, color }) => (
+                            <div key={label} className="flex flex-col items-center gap-2">
+                                <span className="text-sm font-black uppercase tracking-widest" style={{ color }}>{label}</span>
+                                <input
+                                    type="text" value={val}
+                                    onChange={e => set(e.target.value.slice(0, 16))}
+                                    onKeyDown={e => { if (e.key === "Enter" && ready) startLoading(); }}
+                                    placeholder="Enter name..."
+                                    className="w-48 px-5 py-3 rounded-xl text-center text-base font-bold outline-none"
+                                    style={{ background: "rgba(255,255,255,0.06)", border: `1.5px solid ${color}44`, color: "white" }}
+                                />
+                            </div>
+                        ))}
+                    </div>
+
+                    <button onClick={startLoading} disabled={!ready}
+                        className="px-14 py-4 text-lg font-black tracking-widest uppercase rounded-2xl text-white transition-all duration-300 hover:scale-105 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed"
+                        style={{ background: ready ? "linear-gradient(135deg, #4285F4, #EA4335)" : "#333", boxShadow: ready ? "0 0 30px rgba(234,67,53,0.4)" : "none" }}>
+                        Start 🪞
+                    </button>
+
+                    <button onClick={() => navigate("/")} className="text-white/30 text-sm font-bold hover:text-white/60 transition-colors">← Back</button>
+                </div>
+            </Background>
+        );
+    }
+
+    // ── LOADING screen ────────────────────────────────────────────────────────
+    if (phase === "loading") {
+        return (
+            <Background>
+                <div className="flex flex-col items-center justify-center h-screen gap-4 text-white">
+                    <div className="text-6xl animate-float">🪞</div>
+                    <h2 className="text-2xl font-black">Loading AI model...</h2>
+                    <p className="text-white/40 text-sm">Detecting 2 players simultaneously</p>
+                </div>
+            </Background>
+        );
+    }
+
+    // ── DONE screen ───────────────────────────────────────────────────────────
+    if (phase === "done") {
+        const winner = scores[0] > scores[1] ? p1Name : scores[1] > scores[0] ? p2Name : null;
+        return (
+            <Background>
+                <div className="flex flex-col items-center justify-center h-screen gap-6 text-white animate-introFadeUp z-20 relative">
+                    <div className="text-8xl animate-float">{winner ? "🏆" : "🤝"}</div>
+                    <h2 className="text-3xl font-black">{winner ? `${winner} Wins!` : "It's a Draw!"}</h2>
+
+                    <div className="flex gap-12 mt-2">
+                        {[p1Name, p2Name].map((name, i) => (
+                            <div key={i} className="text-center">
+                                <p className="text-5xl font-black" style={{ color: i === 0 ? "#4285F4" : "#EA4335" }}>{scores[i]}</p>
+                                <p className="text-white/40 text-sm font-bold mt-1">{name}</p>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="flex gap-4 mt-4">
+                        <button onClick={() => { setPhase("names"); setScores([0,0]); scoresRef.current=[0,0]; setRound(1); round1Ref.current=1; }}
+                            className="px-10 py-4 font-black uppercase tracking-wider rounded-2xl text-white transition-all hover:scale-105 active:scale-95"
+                            style={{ background: "linear-gradient(135deg, #4285F4, #EA4335)", boxShadow: "0 0 30px rgba(66,133,244,0.4)" }}>
+                            Play Again 🪞
+                        </button>
+                        <button onClick={() => navigate("/")}
+                            className="px-8 py-4 font-black uppercase tracking-wider rounded-2xl transition-all hover:scale-105 active:scale-95"
+                            style={{ background: "rgba(255,255,255,0.08)", border: "1.5px solid rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.7)" }}>
+                            Home
+                        </button>
+                    </div>
+                </div>
+            </Background>
+        );
+    }
+
+    // ── GAME screen (locking / copying / result) ──────────────────────────────
+    const barColor = matchPct >= 80 ? "#34A853" : matchPct >= 50 ? "#FBBC04" : "#EA4335";
+
+    return (
+        <Background>
+            {/* HUD */}
+            <div className="absolute top-0 left-0 right-0 h-16 flex items-center justify-between px-6 z-40"
+                style={{ background: "rgba(9,10,15,0.8)", backdropFilter: "blur(12px)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+
+                {/* P1 score */}
+                <div className="flex items-center gap-2">
+                    <span className="text-sm font-black" style={{ color: "#4285F4" }}>{p1Name}</span>
+                    <span className="text-2xl font-black text-white">{scores[0]}</span>
+                </div>
+
+                {/* Round + phase */}
+                <div className="text-center">
+                    <div className="text-white/60 text-xs font-black uppercase tracking-widest">Round {round}/{ROUNDS}</div>
+                    <div className="text-white font-black text-sm mt-0.5">
+                        {phase === "locking" ? `${poserName} — Strike a pose!` :
+                         phase === "copying" ? `${copierName} — Copy it! (${copyTimeLeft}s)` :
+                         roundResult?.winner >= 0 ? `✅ +1 for ${roundResult.isP1Copying ? p1Name : p2Name}!` : "❌ No point"}
+                    </div>
+                </div>
+
+                {/* P2 score */}
+                <div className="flex items-center gap-2">
+                    <span className="text-2xl font-black text-white">{scores[1]}</span>
+                    <span className="text-sm font-black" style={{ color: "#EA4335" }}>{p2Name}</span>
+                </div>
+            </div>
+
+            {/* Webcam + skeleton canvas */}
+            <div className="relative w-full h-screen">
+                <Webcam ref={webcamRef} mirrored={true} audio={false}
+                    videoConstraints={{ width: 1280, height: 720, facingMode: "user" }}
+                    className="absolute inset-0 w-full h-full object-contain" />
+                <canvas ref={canvasRef}
+                    className="absolute inset-0 w-full h-full pointer-events-none" />
+
+                {/* Centre divider */}
+                <div className="absolute top-16 bottom-0 left-1/2 -translate-x-1/2 w-px pointer-events-none"
+                    style={{ background: "rgba(255,255,255,0.1)" }} />
+
+                {/* Player labels */}
+                <div className="absolute top-20 left-6 z-10 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider"
+                    style={{ background: "rgba(66,133,244,0.2)", border: "1px solid rgba(66,133,244,0.4)", color: "#4285F4" }}>
+                    {p1Name} {isP1Poser && phase === "locking" ? "🎯 POSE" : !isP1Poser && phase === "copying" ? "📋 COPY" : ""}
+                </div>
+                <div className="absolute top-20 right-6 z-10 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider"
+                    style={{ background: "rgba(234,67,53,0.2)", border: "1px solid rgba(234,67,53,0.4)", color: "#EA4335" }}>
+                    {p2Name} {!isP1Poser && phase === "locking" ? "🎯 POSE" : isP1Poser && phase === "copying" ? "📋 COPY" : ""}
+                </div>
+
+                {/* Locking progress bar */}
+                {phase === "locking" && (
+                    <div className="absolute bottom-24 left-1/2 -translate-x-1/2 w-72 z-20">
+                        <p className="text-center text-white/60 text-xs font-bold mb-2 uppercase tracking-widest">
+                            {poserName}: hold your pose to lock it in...
+                        </p>
+                        <div className="w-full h-3 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
+                            <div className="h-full rounded-full transition-all duration-100"
+                                style={{ width: `${lockProgress}%`, background: "linear-gradient(90deg, #4285F4, #34A853)" }} />
+                        </div>
+                    </div>
+                )}
+
+                {/* Match % bar (copying phase) */}
+                {phase === "copying" && (
+                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-80 z-20">
+                        <div className="flex justify-between items-baseline mb-1">
+                            <span className="text-white/40 text-xs font-black uppercase tracking-widest">Match</span>
+                            <span className="text-lg font-black" style={{ color: barColor }}>{matchPct}%</span>
+                        </div>
+                        <div className="w-full h-4 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.08)" }}>
+                            <div className="h-full rounded-full transition-all duration-100"
+                                style={{ width: `${matchPct}%`, background: `linear-gradient(90deg, ${barColor}99, ${barColor})`, boxShadow: matchPct >= 80 ? `0 0 12px 3px ${barColor}88` : "none" }} />
+                        </div>
+                        <p className="text-center text-white/30 text-xs mt-1 font-semibold">
+                            {matchPct >= 80 ? "🟢 Looking good!" : matchPct >= 50 ? "🟡 Getting closer!" : "🔴 Match the pose!"}
+                        </p>
+                    </div>
+                )}
+
+                {/* Round result flash */}
+                {phase === "result" && roundResult && (
+                    <div className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none">
+                        <div className="px-10 py-6 rounded-3xl text-center animate-popIn"
+                            style={{ background: "rgba(9,10,15,0.85)", border: `2px solid ${roundResult.winner >= 0 ? "#34A853" : "#EA4335"}44`, backdropFilter: "blur(12px)" }}>
+                            <div className="text-5xl mb-2">{roundResult.winner >= 0 ? "🎉" : "😅"}</div>
+                            <div className="text-white font-black text-2xl">
+                                {roundResult.winner >= 0 ? `${roundResult.isP1Copying ? p1Name : p2Name} scored!` : "No point — try harder!"}
+                            </div>
+                            <div className="text-white/50 text-sm mt-1">{roundResult.pct}% match</div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </Background>
+    );
+}

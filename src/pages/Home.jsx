@@ -116,6 +116,21 @@ export default function Home() {
                             <span className="text-white font-black text-lg uppercase tracking-wider">Typing Race</span>
                             <span className="text-white/40 text-xs font-semibold">⚡ Type code snippets fast</span>
                         </button>
+
+                        {/* Mirror Match */}
+                        <button
+                            onClick={() => navigate("/mirror")}
+                            className="group flex flex-col items-center gap-3 px-10 py-8 rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95"
+                            style={{
+                                background: "rgba(234,67,53,0.08)",
+                                border: "1.5px solid rgba(234,67,53,0.2)",
+                                boxShadow: "0 0 20px rgba(234,67,53,0.1)",
+                            }}
+                        >
+                            <span className="text-5xl">🪞</span>
+                            <span className="text-white font-black text-lg uppercase tracking-wider">Mirror Match</span>
+                            <span className="text-white/40 text-xs font-semibold">👥 2 players · Copy each other</span>
+                        </button>
                     </div>
 
                     {/* Leaderboard link */}
