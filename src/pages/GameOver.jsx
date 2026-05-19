@@ -2,11 +2,12 @@ import Background from "../components/Background";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { playGameOver } from "../utils/sounds";
+import { QRCodeSVG } from "qrcode.react";
 
 export default function GameOver() {
     const navigate = useNavigate();
     const location = useLocation();
-    const { score = 0, streak = 0, total = 0 } = location.state || {};
+    const { score = 0, streak = 0, total = 0, snapshot = null } = location.state || {};
 
     const [displayScore, setDisplayScore] = useState(0);
     const [isNewRecord, setIsNewRecord] = useState(false);
@@ -42,60 +43,91 @@ export default function GameOver() {
     return (
         <Background>
             <div className="flex flex-col justify-center items-center h-screen gap-6 text-white animate-introFadeUp z-20 relative">
+                
+                <div className="flex flex-row items-center gap-16">
+                    {/* LEFT COLUMN: Score & Stats */}
+                    <div className="flex flex-col items-center gap-4">
+                        {/* Trophy / emoji */}
+                        <div className="text-7xl animate-float">
+                            {isNewRecord ? "🏆" : score > 0 ? "🎉" : "😅"}
+                        </div>
 
-                {/* Trophy / emoji */}
-                <div className="text-8xl animate-float">
-                    {isNewRecord ? "🏆" : score > 0 ? "🎉" : "😅"}
-                </div>
+                        {/* New record banner */}
+                        {isNewRecord && (
+                            <div
+                                className="px-6 py-2 rounded-full font-black text-lg uppercase tracking-widest"
+                                style={{
+                                    background: "linear-gradient(135deg, #FBBC04, #EA4335)",
+                                    boxShadow: "0 0 30px rgba(251,188,4,0.5)",
+                                    animation: "pulseGlow 1.5s ease-in-out infinite",
+                                }}
+                            >
+                                🏆 New Record!
+                            </div>
+                        )}
 
-                {/* New record banner */}
-                {isNewRecord && (
-                    <div
-                        className="px-6 py-2 rounded-full font-black text-lg uppercase tracking-widest"
-                        style={{
-                            background: "linear-gradient(135deg, #FBBC04, #EA4335)",
-                            boxShadow: "0 0 30px rgba(251,188,4,0.5)",
-                            animation: "pulseGlow 1.5s ease-in-out infinite",
-                        }}
-                    >
-                        🏆 New Record!
-                    </div>
-                )}
+                        {/* Score */}
+                        <div className="text-center">
+                            <p className="text-white/40 text-sm font-bold uppercase tracking-widest mb-1">Final Score</p>
+                            <p
+                                className="text-[6rem] font-black leading-none"
+                                style={{
+                                    background: "linear-gradient(135deg, #ffffff, #4285F4)",
+                                    WebkitBackgroundClip: "text",
+                                    WebkitTextFillColor: "transparent",
+                                    backgroundClip: "text",
+                                }}
+                            >
+                                {displayScore}
+                            </p>
+                        </div>
 
-                {/* Score */}
-                <div className="text-center">
-                    <p className="text-white/40 text-sm font-bold uppercase tracking-widest mb-2">Final Score</p>
-                    <p
-                        className="text-[6rem] font-black leading-none"
-                        style={{
-                            background: "linear-gradient(135deg, #ffffff, #4285F4)",
-                            WebkitBackgroundClip: "text",
-                            WebkitTextFillColor: "transparent",
-                            backgroundClip: "text",
-                        }}
-                    >
-                        {displayScore}
-                    </p>
-                </div>
+                        {/* Stats row */}
+                        <div className="flex gap-6 mt-2">
+                            <div className="text-center bg-white/5 rounded-2xl px-5 py-3 border border-white/10">
+                                <p className="text-3xl font-black" style={{ color: "#EA4335" }}>{total}</p>
+                                <p className="text-white/40 text-[0.6rem] font-bold uppercase tracking-wider">Memes</p>
+                            </div>
+                            <div className="text-center bg-white/5 rounded-2xl px-5 py-3 border border-white/10">
+                                <p className="text-3xl font-black" style={{ color: "#FBBC04" }}>{streak}</p>
+                                <p className="text-white/40 text-[0.6rem] font-bold uppercase tracking-wider">Best Streak</p>
+                            </div>
+                            <div className="text-center bg-white/5 rounded-2xl px-5 py-3 border border-white/10">
+                                <p className="text-3xl font-black" style={{ color: "#34A853" }}>{bestScore}</p>
+                                <p className="text-white/40 text-[0.6rem] font-bold uppercase tracking-wider">All-Time</p>
+                            </div>
+                        </div>
+                    </div>
 
-                {/* Stats row */}
-                <div className="flex gap-8 mt-2">
-                    <div className="text-center">
-                        <p className="text-3xl font-black" style={{ color: "#EA4335" }}>{total}</p>
-                        <p className="text-white/40 text-xs font-bold uppercase tracking-wider">Memes</p>
-                    </div>
-                    <div className="text-center">
-                        <p className="text-3xl font-black" style={{ color: "#FBBC04" }}>{streak}</p>
-                        <p className="text-white/40 text-xs font-bold uppercase tracking-wider">Best Streak</p>
-                    </div>
-                    <div className="text-center">
-                        <p className="text-3xl font-black" style={{ color: "#34A853" }}>{bestScore}</p>
-                        <p className="text-white/40 text-xs font-bold uppercase tracking-wider">All-Time Best</p>
-                    </div>
+                    {/* RIGHT COLUMN: Polaroid Snapshot */}
+                    {snapshot && (
+                        <div className="flex flex-col items-center bg-white p-4 rounded-xl shadow-2xl rotate-2 transition-transform hover:rotate-0 duration-300">
+                            <img src={snapshot} alt="Your Meme Pose" className="w-80 h-auto rounded-lg border-2 border-gray-200" />
+                            
+                            <div className="flex flex-row items-center justify-between w-full mt-4 px-2">
+                                <div className="flex flex-col">
+                                    <span className="text-black font-black text-lg">GDSC UTP</span>
+                                    <span className="text-black/50 text-xs font-bold">Booth Snapshot</span>
+                                    <a 
+                                        href={snapshot} 
+                                        download="GDSC-BeTheMeme.jpg"
+                                        className="mt-2 px-4 py-2 bg-[#4285F4] text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-blue-600 transition shadow-md w-max"
+                                    >
+                                        Download ↓
+                                    </a>
+                                </div>
+                                
+                                <div className="flex flex-col items-center gap-1">
+                                    <QRCodeSVG value="https://instagram.com/gdscutp" size={60} />
+                                    <span className="text-[0.55rem] text-black/60 font-black tracking-widest uppercase">Tag Us!</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Buttons */}
-                <div className="flex gap-4 mt-6">
+                <div className="flex gap-4 mt-8">
                     <button
                         onClick={() => navigate("/game")}
                         className="px-12 py-4 text-lg font-black tracking-widest uppercase rounded-2xl text-white transition-all duration-300 hover:scale-105 active:scale-95"
@@ -107,7 +139,7 @@ export default function GameOver() {
                         Play Again 🚀
                     </button>
                     <button
-                        onClick={() => navigate("/leaderboard")}
+                        onClick={() => navigate("/leaderboard", { state: { newRecord: isNewRecord } })}
                         className="px-8 py-4 text-lg font-black tracking-widest uppercase rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95"
                         style={{
                             background: "rgba(251,188,4,0.1)",
@@ -128,17 +160,6 @@ export default function GameOver() {
                     >
                         Home
                     </button>
-                </div>
-
-                {/* GDSC badge */}
-                <div className="flex items-center gap-2 mt-4 opacity-40">
-                    <div className="flex gap-0.5 text-sm font-black">
-                        <span style={{ color: "#EA4335" }}>G</span>
-                        <span style={{ color: "#4285F4" }}>D</span>
-                        <span style={{ color: "#FBBC04" }}>S</span>
-                        <span style={{ color: "#34A853" }}>C</span>
-                    </div>
-                    <span className="text-white/50 font-semibold text-xs">× UTP</span>
                 </div>
             </div>
         </Background>

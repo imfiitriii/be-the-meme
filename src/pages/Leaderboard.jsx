@@ -1,6 +1,6 @@
 import Background from "../components/Background";
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { getLeaderboard } from "../utils/leaderboard";
 
 const GDSC_COLORS = ["#4285F4", "#EA4335", "#FBBC04", "#34A853"];
@@ -8,7 +8,23 @@ const MEDALS = ["🥇", "🥈", "🥉"];
 
 export default function Leaderboard() {
     const navigate = useNavigate();
+    const location = useLocation();
     const [activeTab, setActiveTab] = useState("meme");
+    const [confettiEmojis, setConfettiEmojis] = useState([]);
+
+    useEffect(() => {
+        if (location.state?.newRecord) {
+            const emojis = ['🔥', '⭐', '🎉', '💥', '✨', '🤩', '🏆'];
+            const burst = Array.from({ length: 15 }, (_, i) => ({
+                id: Date.now() + i,
+                emoji: emojis[Math.floor(Math.random() * emojis.length)],
+                left: 20 + Math.random() * 60,
+                delay: Math.random() * 0.4,
+            }));
+            setConfettiEmojis(burst);
+            setTimeout(() => setConfettiEmojis([]), 1500);
+        }
+    }, [location]);
 
     const memeBoard = getLeaderboard("meme");
     const typingBoard = getLeaderboard("typing");
@@ -18,18 +34,26 @@ export default function Leaderboard() {
 
     return (
         <Background>
+            {confettiEmojis.map(c => (
+                <div key={c.id} className="fixed z-50 pointer-events-none animate-confettiUp"
+                    style={{ top: "50%", left: `${c.left}%`, fontSize: "3rem", animationDelay: `${c.delay}s` }}>
+                    {c.emoji}
+                </div>
+            ))}
             <div className="flex flex-col items-center h-screen text-white z-20 relative pt-8 px-4 animate-introFadeUp">
 
                 {/* Header */}
+                <div className="bg-white/95 rounded-xl px-5 py-2 mb-6 shadow-sm inline-flex transition-transform hover:scale-105">
+                    <img src="/gdsc-logo.png" alt="GDSC UTP Logo" className="h-8 object-contain" />
+                </div>
                 <div className="text-5xl mb-2 animate-float">🏆</div>
-                <h1 className="text-4xl font-black mb-1"
+                <h1 className="text-4xl font-black mb-8"
                     style={{
                         background: "linear-gradient(135deg, #ffffff, #FBBC04)",
                         WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text",
                     }}>
                     Leaderboard
                 </h1>
-                <p className="text-white/40 text-sm font-bold mb-6">GDSC UTP Booth</p>
 
                 {/* Tabs */}
                 <div className="flex gap-2 mb-6">
@@ -76,10 +100,12 @@ export default function Leaderboard() {
                             const accent = GDSC_COLORS[i % GDSC_COLORS.length];
                             return (
                                 <div key={i}
-                                    className="flex items-center px-6 py-3.5 transition-colors hover:bg-white/[0.02]"
+                                    className={`flex items-center px-6 py-3.5 transition-colors hover:bg-white/[0.02] ${i === 0 ? "shadow-[0_0_20px_rgba(251,188,4,0.3)] animate-pulse" : ""}`}
                                     style={{
                                         borderBottom: i < board.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
-                                        background: i === 0 ? "rgba(251,188,4,0.04)" : "transparent",
+                                        background: i === 0 ? "linear-gradient(90deg, rgba(251,188,4,0.1), transparent)" : "transparent",
+                                        position: "relative",
+                                        zIndex: i === 0 ? 10 : 1
                                     }}>
                                     <div className="w-12 text-center text-lg">
                                         {i < 3 ? MEDALS[i] : <span className="text-white/20 font-bold text-sm">{i + 1}</span>}

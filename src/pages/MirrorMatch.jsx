@@ -64,6 +64,21 @@ function splitPoses(poses, videoWidth) {
     return [sorted[0], sorted[1]];
 }
 
+function smoothPose(newPose, prevPose, alpha = 0.35) {
+    if (!newPose) return null;
+    if (!prevPose) return newPose;
+    return newPose.map((pt, i) => {
+        const prevPt = prevPose[i];
+        if (!prevPt) return pt;
+        return {
+            x: pt.x * alpha + prevPt.x * (1 - alpha),
+            y: pt.y * alpha + prevPt.y * (1 - alpha),
+            z: pt.z !== undefined ? pt.z * alpha + (prevPt.z || 0) * (1 - alpha) : undefined,
+            visibility: pt.visibility,
+        };
+    });
+}
+
 function drawSkeleton(ctx, pose, w, h, color, mirror = false) {
     if (!pose) return;
     const gx = (x) => mirror ? (1 - x) * w : x * w;
@@ -101,7 +116,8 @@ export default function MirrorMatch() {
     // Names
     const [p1Name, setP1Name] = useState("");
     const [p2Name, setP2Name] = useState("");
-    const [phase, setPhase] = useState("names"); // names | loading | locking | copying | result | done
+    const [phase, setPhase] = useState("names"); // names | loading | buffer | locking | copying | result | done
+    const [bufferCountdown, setBufferCountdown] = useState(3);
 
     // Game state
     const [round, setRound] = useState(1);
@@ -118,6 +134,9 @@ export default function MirrorMatch() {
     const lockedPoseRef = useRef(null);  // frozen P1 pose
     const copyTimerRef = useRef(null);
     const scoresRef = useRef([0, 0]);
+    const smoothedPctRef = useRef(0);
+    const prevPose1Ref = useRef(null);
+    const prevPose2Ref = useRef(null);
 
     function setPhaseSync(p) { phaseRef.current = p; setPhase(p); }
 
@@ -138,8 +157,8 @@ export default function MirrorMatch() {
             numPoses: 2,
         });
         setLandmarker(lm);
-        setPhaseSync("locking");
         startLoop(lm);
+        startBuffer();
     }
 
     // ── Game loop ────────────────────────────────────────────────────────────
@@ -159,7 +178,13 @@ export default function MirrorMatch() {
             }
 
             const res = lm.detectForVideo(video, performance.now());
-            const [pose1, pose2] = splitPoses(res.landmarks, video.videoWidth);
+            let [pose1, pose2] = splitPoses(res.landmarks, video.videoWidth);
+
+            // Apply temporal smoothing
+            pose1 = smoothPose(pose1, prevPose1Ref.current);
+            pose2 = smoothPose(pose2, prevPose2Ref.current);
+            prevPose1Ref.current = pose1;
+            prevPose2Ref.current = pose2;
 
             const ctx = canvas.getContext("2d");
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -189,8 +214,9 @@ export default function MirrorMatch() {
                 // Draw live P2 skeleton (yellow)
                 drawSkeleton(ctx, pose2, canvas.width, canvas.height, "rgba(251,188,4,0.9)", true);
 
-                const pct = comparePoses(lockedPoseRef.current, pose2);
-                setMatchPct(Math.round(pct * 100));
+                const rawPct = comparePoses(lockedPoseRef.current, pose2) * 100;
+                smoothedPctRef.current = smoothedPctRef.current * 0.7 + rawPct * 0.3;
+                setMatchPct(Math.round(smoothedPctRef.current));
             }
 
             animRef.current = requestAnimationFrame(loop);
@@ -236,7 +262,7 @@ export default function MirrorMatch() {
 
         setRoundResult({ winner, pct: finalPct, isP1Copying });
 
-        // After 2.5s move to next round or end
+        // After 2.5s move to buffer → next round, or end
         setTimeout(() => {
             const nextRound = round1Ref.current + 1;
             if (nextRound > ROUNDS) {
@@ -252,9 +278,25 @@ export default function MirrorMatch() {
                 setRoundResult(null);
                 lockHoldRef.current = 0;
                 lockedPoseRef.current = null;
-                setPhaseSync("locking");
+                smoothedPctRef.current = 0;
+                startBuffer();
             }
         }, 2500);
+    }
+
+    function startBuffer() {
+        setPhaseSync("buffer");
+        setBufferCountdown(3);
+        let c = 3;
+        const bufInt = setInterval(() => {
+            c--;
+            if (c <= 0) {
+                clearInterval(bufInt);
+                setPhaseSync("locking");
+            } else {
+                setBufferCountdown(c);
+            }
+        }, 1000);
     }
 
     // Track last match % via ref so endRound can read it
@@ -365,35 +407,73 @@ export default function MirrorMatch() {
         );
     }
 
-    // ── GAME screen (locking / copying / result) ──────────────────────────────
+    // ── BUFFER screen (between rounds) ───────────────────────────────────────────
+    if (phase === "buffer") {
+        return (
+            <Background>
+                <div className="relative w-full h-screen">
+                    <Webcam ref={webcamRef} mirrored={true} audio={false}
+                        videoConstraints={{ width: 1280, height: 720, facingMode: "user" }}
+                        className="absolute inset-0 w-full h-full object-contain" />
+                    <canvas ref={canvasRef}
+                        className="absolute inset-0 w-full h-full pointer-events-none" />
+
+                    {/* Dark overlay */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center z-30"
+                        style={{ background: "rgba(9,10,15,0.75)" }}>
+                        <div className="text-white/30 text-lg font-black uppercase tracking-widest mb-2">Round {round} of {ROUNDS}</div>
+                        <div className="text-6xl mb-4" key={`buf-${bufferCountdown}`}>{bufferCountdown}</div>
+                        <div className="text-3xl font-black text-white mb-2">
+                            {poserName}'s turn to pose!
+                        </div>
+                        <div className="flex items-center gap-3 mt-2">
+                            <span className="text-lg font-black" style={{ color: isP1Poser ? "#4285F4" : "#EA4335" }}>
+                                {poserName} 🎯
+                            </span>
+                            <span className="text-white/30 text-lg">→</span>
+                            <span className="text-lg font-black" style={{ color: isP1Poser ? "#EA4335" : "#4285F4" }}>
+                                {copierName} 📋
+                            </span>
+                        </div>
+                        <p className="text-white/40 text-sm font-semibold mt-4">Get into position!</p>
+                    </div>
+                </div>
+            </Background>
+        );
+    }
+
+    // ── GAME screen (locking / copying / result) ────────────────────────────────────────
     const barColor = matchPct >= 80 ? "#34A853" : matchPct >= 50 ? "#FBBC04" : "#EA4335";
 
     return (
         <Background>
-            {/* HUD */}
-            <div className="absolute top-0 left-0 right-0 h-16 flex items-center justify-between px-6 z-40"
-                style={{ background: "rgba(9,10,15,0.8)", backdropFilter: "blur(12px)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+            {/* HUD — taller, bigger text for booth readability */}
+            <div className="absolute top-0 left-0 right-0 h-20 flex items-center justify-between px-8 z-40"
+                style={{ background: "rgba(9,10,15,0.85)", backdropFilter: "blur(12px)", borderBottom: "2px solid rgba(255,255,255,0.08)" }}>
 
                 {/* P1 score */}
-                <div className="flex items-center gap-2">
-                    <span className="text-sm font-black" style={{ color: "#4285F4" }}>{p1Name}</span>
-                    <span className="text-2xl font-black text-white">{scores[0]}</span>
+                <div className="flex items-center gap-3">
+                    <span className="text-xl font-black" style={{ color: "#4285F4" }}>{p1Name}</span>
+                    <span className="text-4xl font-black text-white">{scores[0]}</span>
                 </div>
 
-                {/* Round + phase */}
-                <div className="text-center">
-                    <div className="text-white/60 text-xs font-black uppercase tracking-widest">Round {round}/{ROUNDS}</div>
-                    <div className="text-white font-black text-sm mt-0.5">
+                {/* Round + phase instruction */}
+                <div className="text-center flex flex-col items-center">
+                    <div className="flex items-center gap-2 mb-0.5 bg-white/10 rounded-full px-3 py-0.5">
+                        <img src="/gdsc-logo.png" alt="GDSC Logo" className="h-3 object-contain brightness-0 invert opacity-70" />
+                        <span className="text-white/60 text-xs font-black uppercase tracking-widest">Round {round}/{ROUNDS}</span>
+                    </div>
+                    <div className="text-white font-black text-xl">
                         {phase === "locking" ? `${poserName} — Strike a pose!` :
-                         phase === "copying" ? `${copierName} — Copy it! (${copyTimeLeft}s)` :
+                         phase === "copying" ? `${copierName} — Copy it!` :
                          roundResult?.winner >= 0 ? `✅ +1 for ${roundResult.isP1Copying ? p1Name : p2Name}!` : "❌ No point"}
                     </div>
                 </div>
 
                 {/* P2 score */}
-                <div className="flex items-center gap-2">
-                    <span className="text-2xl font-black text-white">{scores[1]}</span>
-                    <span className="text-sm font-black" style={{ color: "#EA4335" }}>{p2Name}</span>
+                <div className="flex items-center gap-3">
+                    <span className="text-4xl font-black text-white">{scores[1]}</span>
+                    <span className="text-xl font-black" style={{ color: "#EA4335" }}>{p2Name}</span>
                 </div>
             </div>
 
@@ -406,59 +486,77 @@ export default function MirrorMatch() {
                     className="absolute inset-0 w-full h-full pointer-events-none" />
 
                 {/* Centre divider */}
-                <div className="absolute top-16 bottom-0 left-1/2 -translate-x-1/2 w-px pointer-events-none"
-                    style={{ background: "rgba(255,255,255,0.1)" }} />
+                <div className="absolute top-20 bottom-0 left-1/2 -translate-x-1/2 w-0.5 pointer-events-none"
+                    style={{ background: "rgba(255,255,255,0.12)" }} />
 
-                {/* Player labels */}
-                <div className="absolute top-20 left-6 z-10 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider"
-                    style={{ background: "rgba(66,133,244,0.2)", border: "1px solid rgba(66,133,244,0.4)", color: "#4285F4" }}>
+                {/* Player labels — bigger for booth */}
+                <div className="absolute top-24 left-6 z-10 px-5 py-2 rounded-full text-base font-black uppercase tracking-wider"
+                    style={{ background: "rgba(66,133,244,0.25)", border: "1.5px solid rgba(66,133,244,0.5)", color: "#4285F4" }}>
                     {p1Name} {isP1Poser && phase === "locking" ? "🎯 POSE" : !isP1Poser && phase === "copying" ? "📋 COPY" : ""}
                 </div>
-                <div className="absolute top-20 right-6 z-10 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider"
-                    style={{ background: "rgba(234,67,53,0.2)", border: "1px solid rgba(234,67,53,0.4)", color: "#EA4335" }}>
+                <div className="absolute top-24 right-6 z-10 px-5 py-2 rounded-full text-base font-black uppercase tracking-wider"
+                    style={{ background: "rgba(234,67,53,0.25)", border: "1.5px solid rgba(234,67,53,0.5)", color: "#EA4335" }}>
                     {p2Name} {!isP1Poser && phase === "locking" ? "🎯 POSE" : isP1Poser && phase === "copying" ? "📋 COPY" : ""}
                 </div>
 
-                {/* Locking progress bar */}
+                {/* Locking progress bar — wider, bigger text */}
                 {phase === "locking" && (
-                    <div className="absolute bottom-24 left-1/2 -translate-x-1/2 w-72 z-20">
-                        <p className="text-center text-white/60 text-xs font-bold mb-2 uppercase tracking-widest">
-                            {poserName}: hold your pose to lock it in...
+                    <div className="absolute bottom-28 left-1/2 -translate-x-1/2 w-96 z-20"
+                        style={{ background: "rgba(9,10,15,0.7)", backdropFilter: "blur(8px)", borderRadius: "1rem", padding: "1rem 1.5rem" }}>
+                        <p className="text-center text-white/70 text-base font-black mb-3 uppercase tracking-wider">
+                            🎯 {poserName}: hold your pose to lock it in
                         </p>
-                        <div className="w-full h-3 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
+                        <div className="w-full h-4 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.12)" }}>
                             <div className="h-full rounded-full transition-all duration-100"
                                 style={{ width: `${lockProgress}%`, background: "linear-gradient(90deg, #4285F4, #34A853)" }} />
                         </div>
                     </div>
                 )}
 
-                {/* Match % bar (copying phase) */}
+                {/* Copy timer — big visible countdown */}
                 {phase === "copying" && (
-                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-80 z-20">
-                        <div className="flex justify-between items-baseline mb-1">
-                            <span className="text-white/40 text-xs font-black uppercase tracking-widest">Match</span>
-                            <span className="text-lg font-black" style={{ color: barColor }}>{matchPct}%</span>
+                    <div className="absolute top-24 left-1/2 -translate-x-1/2 z-20">
+                        <div className="flex items-center justify-center w-16 h-16 rounded-full font-black text-2xl"
+                            style={{
+                                border: `3px solid ${copyTimeLeft <= 3 ? '#EA4335' : '#FBBC04'}`,
+                                color: copyTimeLeft <= 3 ? "#EA4335" : "#FBBC04",
+                                background: "rgba(9,10,15,0.7)",
+                                backdropFilter: "blur(8px)",
+                                animation: copyTimeLeft <= 3 ? "pulseGlow 0.5s ease-in-out infinite" : "none",
+                            }}>
+                            {copyTimeLeft}
                         </div>
-                        <div className="w-full h-4 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.08)" }}>
+                    </div>
+                )}
+
+                {/* Match % bar (copying phase) — bigger, clearer */}
+                {phase === "copying" && (
+                    <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-96 z-20"
+                        style={{ background: "rgba(9,10,15,0.7)", backdropFilter: "blur(8px)", borderRadius: "1rem", padding: "1rem 1.5rem" }}>
+                        <div className="flex justify-between items-baseline mb-2">
+                            <span className="text-white/50 text-sm font-black uppercase tracking-widest">Match</span>
+                            <span className="text-2xl font-black" style={{ color: barColor }}>{matchPct}%</span>
+                        </div>
+                        <div className="w-full h-5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.1)" }}>
                             <div className="h-full rounded-full transition-all duration-100"
                                 style={{ width: `${matchPct}%`, background: `linear-gradient(90deg, ${barColor}99, ${barColor})`, boxShadow: matchPct >= 80 ? `0 0 12px 3px ${barColor}88` : "none" }} />
                         </div>
-                        <p className="text-center text-white/30 text-xs mt-1 font-semibold">
-                            {matchPct >= 80 ? "🟢 Looking good!" : matchPct >= 50 ? "🟡 Getting closer!" : "🔴 Match the pose!"}
+                        <p className="text-center text-white/40 text-sm mt-2 font-bold">
+                            {matchPct >= 80 ? "🟢 Looking good! Hold it!" : matchPct >= 50 ? "🟡 Getting closer!" : "🔴 Match the pose!"}
                         </p>
                     </div>
                 )}
 
-                {/* Round result flash */}
+                {/* Round result flash — bigger */}
                 {phase === "result" && roundResult && (
                     <div className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none">
-                        <div className="px-10 py-6 rounded-3xl text-center animate-popIn"
-                            style={{ background: "rgba(9,10,15,0.85)", border: `2px solid ${roundResult.winner >= 0 ? "#34A853" : "#EA4335"}44`, backdropFilter: "blur(12px)" }}>
-                            <div className="text-5xl mb-2">{roundResult.winner >= 0 ? "🎉" : "😅"}</div>
-                            <div className="text-white font-black text-2xl">
+                        <div className="px-14 py-8 rounded-3xl text-center animate-popIn"
+                            style={{ background: "rgba(9,10,15,0.9)", border: `2px solid ${roundResult.winner >= 0 ? "#34A853" : "#EA4335"}66`, backdropFilter: "blur(16px)" }}>
+                            <div className="text-7xl mb-3">{roundResult.winner >= 0 ? "🎉" : "😅"}</div>
+                            <div className="text-white font-black text-3xl">
                                 {roundResult.winner >= 0 ? `${roundResult.isP1Copying ? p1Name : p2Name} scored!` : "No point — try harder!"}
                             </div>
-                            <div className="text-white/50 text-sm mt-1">{roundResult.pct}% match</div>
+                            <div className="text-white/50 text-lg font-bold mt-2">{roundResult.pct}% match</div>
                         </div>
                     </div>
                 )}

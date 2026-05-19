@@ -94,6 +94,21 @@ function mirrorPose(pose) {
     return mirrored;
 }
 
+function smoothPose(newPose, prevPose, alpha = 0.35) {
+    if (!newPose) return null;
+    if (!prevPose) return newPose;
+    return newPose.map((pt, i) => {
+        const prevPt = prevPose[i];
+        if (!prevPt) return pt;
+        return {
+            x: pt.x * alpha + prevPt.x * (1 - alpha),
+            y: pt.y * alpha + prevPt.y * (1 - alpha),
+            z: pt.z !== undefined ? pt.z * alpha + (prevPt.z || 0) * (1 - alpha) : undefined,
+            visibility: pt.visibility,
+        };
+    });
+}
+
 // Helper to load an image as an HTMLImageElement
 function loadImage(src) {
     return new Promise((resolve, reject) => {
@@ -136,6 +151,12 @@ export default function Game() {
     const playerNameRef = useRef("");
     const scoreRef = useRef(0);
     const bestStreakRef = useRef(0);
+    const pausedRef = useRef(false);
+    const smoothedScoreRef = useRef(0);
+    const prevPoseRef = useRef(null);
+    const bestSnapshotRef = useRef(null);
+
+    const [tooManyPeople, setTooManyPeople] = useState(false);
 
     // Start extraction only after name is entered
     useEffect(() => {
@@ -152,20 +173,58 @@ export default function Game() {
     // Countdown timer — resets on meme change
     useEffect(() => {
         if (loading || memes.length === 0) return;
-        setTimeLeft(15);
+        setTimeLeft(10);
         if (timerRef.current) clearInterval(timerRef.current);
         timerRef.current = setInterval(() => {
             setTimeLeft(prev => {
+                if (pausedRef.current) return prev;
                 if (prev <= 1) {
-                    // Time's up — skip without scoring, break streak
                     clearInterval(timerRef.current);
-                    playTimeout();
-                    streakRef.current = 0;
-                    setStreak(0);
+                    
+                    // Snapshot evaluation moment
+                    if (smoothedScoreRef.current > 0.70) {
+                        setScore(s => {
+                            const newScore = s + 1;
+                            scoreRef.current = newScore;
+                            return newScore;
+                        });
+                        setShowScorePopup(true);
+                        if (webcamRef.current) bestSnapshotRef.current = webcamRef.current.getScreenshot();
+                        
+                        streakRef.current += 1;
+                        setStreak(streakRef.current);
+                        setBestStreak(b => {
+                            const nb = Math.max(b, streakRef.current);
+                            bestStreakRef.current = nb;
+                            return nb;
+                        });
+
+                        playScore();
+                        if (streakRef.current >= 3) {
+                            playStreak();
+                            const emojis = ['🔥', '⭐', '🎉', '💥', '✨', '🤩'];
+                            const burst = Array.from({ length: 8 }, (_, i) => ({
+                                id: Date.now() + i,
+                                emoji: emojis[Math.floor(Math.random() * emojis.length)],
+                                left: 30 + Math.random() * 40,
+                                delay: Math.random() * 0.3,
+                            }));
+                            setConfettiEmojis(burst);
+                            setTimeout(() => setConfettiEmojis([]), 1200);
+                        }
+                        setTimeout(() => setShowScorePopup(false), 1200);
+                    } else {
+                        // Missed
+                        playTimeout();
+                        streakRef.current = 0;
+                        setStreak(0);
+                    }
+                    
+                    smoothedScoreRef.current = 0;
                     advanceMeme();
-                    return 15;
+                    return 10;
                 }
-                if (prev <= 6) playTick();
+                if (prev <= 3) playTick();
                 return prev - 1;
             });
         }, 1000);
@@ -178,6 +237,9 @@ export default function Game() {
             if (next >= memesRef.current.length) {
                 // Save to leaderboard and go to Game Over
                 setTimeout(() => {
+                    const currentBest = parseInt(localStorage.getItem("btm_best") || "0");
+                    const isNewRecord = scoreRef.current > currentBest;
+                    
                     addEntry("meme", { name: playerNameRef.current, score: scoreRef.current });
                     navigate("/gameover", {
                         state: {
@@ -185,6 +247,8 @@ export default function Game() {
                             score: scoreRef.current,
                             streak: bestStreakRef.current,
                             total: memesRef.current.length,
+                            snapshot: bestSnapshotRef.current,
+                            newRecord: isNewRecord
                         },
                     });
                 }, 300);
@@ -198,6 +262,7 @@ export default function Game() {
         playTimeout();
         streakRef.current = 0;
         setStreak(0);
+        smoothedScoreRef.current = 0;
         advanceMeme();
     }
 
@@ -248,7 +313,7 @@ export default function Game() {
                         "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
                 },
                 runningMode: "VIDEO",
-                numPoses: 1,
+                numPoses: 2,
             }
         );
 
@@ -319,65 +384,29 @@ export default function Game() {
                     performance.now()
                 );
 
+                if (results.landmarks && results.landmarks.length > 1) {
+                    setTooManyPeople(true);
+                    pausedRef.current = true;
+                } else {
+                    setTooManyPeople(false);
+                    pausedRef.current = false;
+                }
+
                 const rawUserPose = results.landmarks?.[0];
-                const userPose = mirrorPose(rawUserPose);
+                let userPose = mirrorPose(rawUserPose);
+                
+                // Apply temporal smoothing to reduce jitter
+                userPose = smoothPose(userPose, prevPoseRef.current);
+                prevPoseRef.current = userPose;
+
                 const memePose = memesRef.current[currentIndexRef.current]?.pose;
 
                 drawLandmarks(userPose ? [userPose] : []);
 
-                const matchScore = comparePoses(userPose, memePose);
+                const rawScore = comparePoses(userPose, memePose);
+                smoothedScoreRef.current = smoothedScoreRef.current * 0.7 + rawScore * 0.3;
+                const matchScore = smoothedScoreRef.current;
                 setMatchScore(matchScore);
-
-                if (matchScore > 0.70) {
-                    holdRef.current += 1;
-                } else {
-                    holdRef.current = 0;
-                }
-
-                if (holdRef.current > 15 && canScoreRef.current) {
-                    canScoreRef.current = false;
-
-                    setScore(prev => {
-                        const newScore = prev + 1;
-                        scoreRef.current = newScore;
-                        return newScore;
-                    });
-                    setShowScorePopup(true);
-
-                    // Streak
-                    streakRef.current += 1;
-                    const newStreak = streakRef.current;
-                    setStreak(newStreak);
-                    setBestStreak(prev => {
-                        const newBest = Math.max(prev, newStreak);
-                        bestStreakRef.current = newBest;
-                        return newBest;
-                    });
-
-                    // Sounds
-                    playScore();
-                    if (newStreak >= 3) {
-                        playStreak();
-                        // Confetti burst
-                        const emojis = ['🔥', '⭐', '🎉', '💥', '✨', '🤩'];
-                        const burst = Array.from({ length: 8 }, (_, i) => ({
-                            id: Date.now() + i,
-                            emoji: emojis[Math.floor(Math.random() * emojis.length)],
-                            left: 30 + Math.random() * 40,
-                            delay: Math.random() * 0.3,
-                        }));
-                        setConfettiEmojis(burst);
-                        setTimeout(() => setConfettiEmojis([]), 1200);
-                    }
-
-                    advanceMeme();
-                    holdRef.current = 0;
-
-                    setTimeout(() => {
-                        setShowScorePopup(false);
-                        canScoreRef.current = true;
-                    }, 1200);
-                }
             }
 
             requestAnimationFrame(frameLandmarks);
@@ -566,14 +595,8 @@ export default function Game() {
                     style={{ background: "rgba(9,10,15,0.75)", backdropFilter: "blur(12px)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
 
                     {/* GDSC UTP badge */}
-                    <div className="flex items-center gap-2">
-                        <div className="flex gap-0.5 text-xl font-black">
-                            <span style={{ color: "#EA4335" }}>G</span>
-                            <span style={{ color: "#4285F4" }}>D</span>
-                            <span style={{ color: "#FBBC04" }}>S</span>
-                            <span style={{ color: "#34A853" }}>C</span>
-                        </div>
-                        <span className="text-white/40 font-bold text-sm">× UTP</span>
+                    <div className="flex items-center gap-2 bg-white/95 rounded-lg px-3 py-1 shadow-sm">
+                        <img src="/gdsc-logo.png" alt="GDSC UTP Logo" className="h-6 object-contain" />
                     </div>
 
                     {/* Current meme name + timer */}
@@ -700,6 +723,20 @@ export default function Game() {
                                 style={{ background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", color: "rgba(255,255,255,0.6)" }}>
                                 You
                             </div>
+
+                            {/* Multiple People Overlay */}
+                            {tooManyPeople && (
+                                <div className="absolute inset-0 flex flex-col items-center justify-center z-20"
+                                    style={{ background: "rgba(234,67,53,0.85)", backdropFilter: "blur(8px)" }}>
+                                    <div className="text-6xl mb-2 animate-bounce">⚠️</div>
+                                    <div className="text-white font-black text-2xl uppercase tracking-widest text-center px-4">
+                                        Multiple People Detected!
+                                    </div>
+                                    <div className="text-white/80 font-bold text-sm mt-2 text-center px-4">
+                                        Only one person can play at a time.<br/>Please step out of the frame.
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
                         {/* Match bar */}

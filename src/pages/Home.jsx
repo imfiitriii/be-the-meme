@@ -35,17 +35,14 @@ export default function Home() {
 
                 <div className="relative flex flex-col justify-center items-center gap-6 h-screen animate-introFadeUp text-white z-20">
 
-                    {/* GDSC UTP Badge */}
-                    <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-full px-5 py-2 backdrop-blur-sm">
-                        <div className="flex gap-0.5 text-lg font-black tracking-tight">
-                            <span style={{ color: "#EA4335" }}>G</span>
-                            <span style={{ color: "#4285F4" }}>D</span>
-                            <span style={{ color: "#FBBC04" }}>S</span>
-                            <span style={{ color: "#34A853" }}>C</span>
+                    {/* GDSC UTP Badge with Logo */}
+                    <div className="flex items-center gap-4 bg-white/95 rounded-2xl px-6 py-3 shadow-[0_0_40px_rgba(255,255,255,0.15)] transition-transform hover:scale-105 cursor-default">
+                        <img src="/gdsc-logo.png" alt="GDSC UTP Logo" className="h-14 object-contain" />
+                        <div className="h-10 w-px bg-black/10" />
+                        <div className="flex flex-col">
+                            <span className="text-black/80 font-black text-sm uppercase tracking-widest leading-tight">Booth</span>
+                            <span className="text-black/40 font-bold text-xs uppercase tracking-widest">Games</span>
                         </div>
-                        <span className="text-white/50 font-semibold text-sm">× UTP</span>
-                        <span className="w-px h-4 bg-white/20" />
-                        <span className="text-white/60 text-sm font-semibold">Booth Game</span>
                     </div>
 
                     {/* Title */}
@@ -90,13 +87,14 @@ export default function Home() {
                         {/* Be The Meme */}
                         <button
                             onClick={() => navigate("/game")}
-                            className="group flex flex-col items-center gap-3 px-10 py-8 rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95"
+                            className="group relative flex flex-col items-center gap-3 px-10 py-8 rounded-3xl transition-all duration-300 hover:scale-105 active:scale-95 overflow-hidden"
                             style={{
                                 background: "rgba(66,133,244,0.08)",
-                                border: "1.5px solid rgba(66,133,244,0.2)",
-                                boxShadow: "0 0 20px rgba(66,133,244,0.1)",
+                                border: "1.5px solid rgba(66,133,244,0.3)",
+                                boxShadow: "0 8px 32px rgba(66,133,244,0.15)",
                             }}
                         >
+                            <div className="absolute inset-0 bg-gradient-to-br from-[#4285F4]/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                             <span className="text-5xl">🎭</span>
                             <span className="text-white font-black text-lg uppercase tracking-wider">Be The Meme</span>
                             <span className="text-white/40 text-xs font-semibold">📷 Match poses with your body</span>
@@ -105,13 +103,14 @@ export default function Home() {
                         {/* Typing Race */}
                         <button
                             onClick={() => navigate("/typing")}
-                            className="group flex flex-col items-center gap-3 px-10 py-8 rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95"
+                            className="group relative flex flex-col items-center gap-3 px-10 py-8 rounded-3xl transition-all duration-300 hover:scale-105 active:scale-95 overflow-hidden"
                             style={{
                                 background: "rgba(52,168,83,0.08)",
-                                border: "1.5px solid rgba(52,168,83,0.2)",
-                                boxShadow: "0 0 20px rgba(52,168,83,0.1)",
+                                border: "1.5px solid rgba(52,168,83,0.3)",
+                                boxShadow: "0 8px 32px rgba(52,168,83,0.15)",
                             }}
                         >
+                            <div className="absolute inset-0 bg-gradient-to-br from-[#34A853]/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                             <span className="text-5xl">⌨️</span>
                             <span className="text-white font-black text-lg uppercase tracking-wider">Typing Race</span>
                             <span className="text-white/40 text-xs font-semibold">⚡ Type code snippets fast</span>
@@ -120,13 +119,14 @@ export default function Home() {
                         {/* Mirror Match */}
                         <button
                             onClick={() => navigate("/mirror")}
-                            className="group flex flex-col items-center gap-3 px-10 py-8 rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95"
+                            className="group relative flex flex-col items-center gap-3 px-10 py-8 rounded-3xl transition-all duration-300 hover:scale-105 active:scale-95 overflow-hidden"
                             style={{
                                 background: "rgba(234,67,53,0.08)",
-                                border: "1.5px solid rgba(234,67,53,0.2)",
-                                boxShadow: "0 0 20px rgba(234,67,53,0.1)",
+                                border: "1.5px solid rgba(234,67,53,0.3)",
+                                boxShadow: "0 8px 32px rgba(234,67,53,0.15)",
                             }}
                         >
+                            <div className="absolute inset-0 bg-gradient-to-br from-[#EA4335]/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                             <span className="text-5xl">🪞</span>
                             <span className="text-white font-black text-lg uppercase tracking-wider">Mirror Match</span>
                             <span className="text-white/40 text-xs font-semibold">👥 2 players · Copy each other</span>
@@ -136,8 +136,8 @@ export default function Home() {
                     {/* Leaderboard link */}
                     <button
                         onClick={() => navigate("/leaderboard")}
-                        className="mt-2 text-sm font-bold uppercase tracking-wider transition-all duration-200 hover:scale-105"
-                        style={{ color: "#FBBC04" }}
+                        className="mt-4 px-8 py-3 rounded-full text-sm font-black uppercase tracking-widest transition-all duration-300 hover:scale-105 shadow-[0_0_20px_rgba(251,188,4,0.2)] hover:shadow-[0_0_30px_rgba(251,188,4,0.4)]"
+                        style={{ background: "rgba(251,188,4,0.15)", border: "1.5px solid #FBBC04", color: "#FBBC04" }}
                     >
                         🏆 View Leaderboard
                     </button>

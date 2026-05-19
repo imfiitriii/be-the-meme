@@ -158,14 +158,8 @@ export default function TypingRace() {
     }
 
     const GDSC_BADGE = (
-        <div className="flex items-center gap-2 opacity-40">
-            <div className="flex gap-0.5 text-sm font-black">
-                <span style={{ color: "#EA4335" }}>G</span>
-                <span style={{ color: "#4285F4" }}>D</span>
-                <span style={{ color: "#FBBC04" }}>S</span>
-                <span style={{ color: "#34A853" }}>C</span>
-            </div>
-            <span className="text-white/50 font-semibold text-xs">× UTP</span>
+        <div className="flex items-center gap-2 bg-white/10 rounded-full px-3 py-1 mt-4 opacity-70">
+            <img src="/gdsc-logo.png" alt="GDSC UTP" className="h-4 object-contain brightness-0 invert" />
         </div>
     );
 
@@ -319,7 +313,7 @@ export default function TypingRace() {
                             style={{ background: "linear-gradient(135deg, #4285F4, #34A853)", boxShadow: "0 0 30px rgba(66,133,244,0.5)" }}>
                             Play Again ⚡
                         </button>
-                        <button onClick={() => navigate("/leaderboard")}
+                        <button onClick={() => navigate("/leaderboard", { state: { newRecord: isNewRecord } })}
                             className="px-8 py-4 text-lg font-black tracking-widest uppercase rounded-2xl transition-all duration-300 hover:scale-105 active:scale-95"
                             style={{ background: "rgba(251,188,4,0.1)", border: "1.5px solid rgba(251,188,4,0.3)", color: "#FBBC04" }}>
                             🏆 Leaderboard
