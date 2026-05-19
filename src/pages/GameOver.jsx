@@ -2,7 +2,6 @@ import Background from "../components/Background";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { playGameOver } from "../utils/sounds";
-import { QRCodeSVG } from "qrcode.react";
 
 export default function GameOver() {
     const navigate = useNavigate();
@@ -11,6 +10,33 @@ export default function GameOver() {
 
     const [displayScore, setDisplayScore] = useState(0);
     const [isNewRecord, setIsNewRecord] = useState(false);
+
+    async function handleShare() {
+        if (!snapshot) return;
+        try {
+            const response = await fetch(snapshot);
+            const blob = await response.blob();
+            const file = new File([blob], 'GDSC-Booth-Snapshot.jpg', { type: 'image/jpeg' });
+            
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                await navigator.share({
+                    title: 'GDSC Booth Snapshot',
+                    text: 'Here is your photo from the GDSC UTP Booth!',
+                    files: [file]
+                });
+            } else {
+                // Fallback to manual download if native sharing is not supported
+                const a = document.createElement("a");
+                a.href = snapshot;
+                a.download = "GDSC-BeTheMeme.jpg";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+        } catch (err) {
+            console.error("Error sharing:", err);
+        }
+    }
 
     useEffect(() => {
         // Check for new best score
@@ -108,17 +134,16 @@ export default function GameOver() {
                                 <div className="flex flex-col">
                                     <span className="text-black font-black text-lg">GDSC UTP</span>
                                     <span className="text-black/50 text-xs font-bold">Booth Snapshot</span>
-                                    <a 
-                                        href={snapshot} 
-                                        download="GDSC-BeTheMeme.jpg"
+                                    <button 
+                                        onClick={handleShare}
                                         className="mt-2 px-4 py-2 bg-[#4285F4] text-white text-xs font-bold uppercase tracking-widest rounded-lg hover:bg-blue-600 transition shadow-md w-max"
                                     >
-                                        Download ↓
-                                    </a>
+                                        Share to Phone 📲
+                                    </button>
                                 </div>
                                 
                                 <div className="flex flex-col items-center gap-1">
-                                    <QRCodeSVG value="https://instagram.com/gdscutp" size={60} />
+                                    <img src="/insta-qr.png" alt="Instagram QR" className="w-[4.5rem] h-[4.5rem] object-contain rounded-md" />
                                     <span className="text-[0.55rem] text-black/60 font-black tracking-widest uppercase">Tag Us!</span>
                                 </div>
                             </div>
