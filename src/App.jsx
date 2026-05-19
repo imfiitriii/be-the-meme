@@ -13,23 +13,30 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  // Routes where attract mode should NEVER fire (active gameplay)
+  const ACTIVE_ROUTES = ["/game", "/mirror", "/typing"];
+  const isActiveGame = ACTIVE_ROUTES.some(r => location.pathname.startsWith(r));
+
   useEffect(() => {
+    // Don't set any timer while the user is actively playing
+    if (isActiveGame) return;
+
     let timeout;
-    
+
     function resetTimer() {
       clearTimeout(timeout);
       // Don't trigger attract mode if we're already on it
       if (location.pathname !== "/attract") {
         timeout = setTimeout(() => {
           navigate("/attract");
-        }, 60000); // 60 seconds
+        }, 60000); // 60 seconds of inactivity
       }
     }
 
     // Set initial timer
     resetTimer();
 
-    // Listeners
+    // Reset timer on any user interaction
     window.addEventListener("mousemove", resetTimer);
     window.addEventListener("mousedown", resetTimer);
     window.addEventListener("keydown", resetTimer);
@@ -42,7 +49,7 @@ function App() {
       window.removeEventListener("keydown", resetTimer);
       window.removeEventListener("touchstart", resetTimer);
     };
-  }, [navigate, location.pathname]);
+  }, [navigate, location.pathname, isActiveGame]);
 
   return (
     <>

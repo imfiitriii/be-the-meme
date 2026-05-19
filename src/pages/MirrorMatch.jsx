@@ -7,8 +7,8 @@ import { playScore, playTick, playTimeout, playGameOver } from "../utils/sounds"
 
 const VISIBILITY_THRESHOLD = 0.5;
 const ROUNDS = 5;
-const LOCK_HOLD = 40;   // frames player 1 must hold to lock pose (~1.3s)
-const COPY_TIME = 6;    // seconds player 2 has to copy
+const POSE_TIME = 5;    // seconds the poser has to strike a pose before it locks
+const COPY_TIME = 6;    // seconds the copier has to match the pose
 
 // ── Pose helpers ────────────────────────────────────────────────────────────
 function normalizePose(pose) {
@@ -46,20 +46,25 @@ const CONNECTIONS = [
     [23,25],[25,27],[24,26],[26,28],
 ];
 
-// Split landmarks: left half of frame → player 1, right half → player 2
-function splitPoses(poses, videoWidth) {
+// Split landmarks into [P1, P2].
+// The webcam is mirrored={true}, so visually the LEFT side of the screen
+// corresponds to raw landmark X > 0.5. We want:
+//   P1 → the person standing on the visual LEFT  (raw X > 0.5)
+//   P2 → the person standing on the visual RIGHT (raw X < 0.5)
+function splitPoses(poses) {
     if (!poses || poses.length === 0) return [null, null];
     if (poses.length === 1) {
-        // Assign by hip center x
         const p = poses[0];
+        // hip center in raw (un-mirrored) coordinates
         const hipX = p[23] ? (p[23].x + (p[24]?.x ?? p[23].x)) / 2 : 0.5;
-        return hipX < 0.5 ? [p, null] : [null, p];
+        // visually LEFT person has hipX > 0.5 in raw space → P1
+        return hipX > 0.5 ? [p, null] : [null, p];
     }
-    // Sort by hip center x
+    // Sort descending by raw hip X so visual-left person (higher raw X) = P1
     const sorted = [...poses].sort((a, b) => {
         const ax = a[23] ? (a[23].x + (a[24]?.x ?? a[23].x)) / 2 : 0.5;
         const bx = b[23] ? (b[23].x + (b[24]?.x ?? b[23].x)) / 2 : 0.5;
-        return ax - bx;
+        return bx - ax; // descending: higher raw X (visual left) first
     });
     return [sorted[0], sorted[1]];
 }
@@ -79,13 +84,31 @@ function smoothPose(newPose, prevPose, alpha = 0.35) {
     });
 }
 
-function drawSkeleton(ctx, pose, w, h, color, mirror = false) {
+function getHipX(pose) {
+    if (!pose || !pose[23]) return null;
+    return (pose[23].x + (pose[24]?.x ?? pose[23].x)) / 2;
+}
+
+function shiftPoseX(pose, dx) {
+    if (!pose) return null;
+    return pose.map(p => ({
+        ...p,
+        x: p.x + dx
+    }));
+}
+
+function drawSkeleton(ctx, pose, w, h, color, mirror = false, glow = false) {
     if (!pose) return;
     const gx = (x) => mirror ? (1 - x) * w : x * w;
     const gy = (y) => y * h;
 
+    if (glow) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 18;
+    }
+
     ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = glow ? 5 : 3;
     CONNECTIONS.forEach(([a, b]) => {
         const p1 = pose[a], p2 = pose[b];
         if (!p1 || !p2) return;
@@ -100,10 +123,15 @@ function drawSkeleton(ctx, pose, w, h, color, mirror = false) {
         if (i <= 10) return;
         if ((pt.visibility ?? 1) < VISIBILITY_THRESHOLD) return;
         ctx.beginPath();
-        ctx.arc(gx(pt.x), gy(pt.y), 5, 0, Math.PI * 2);
+        ctx.arc(gx(pt.x), gy(pt.y), glow ? 7 : 5, 0, Math.PI * 2);
         ctx.fillStyle = color;
         ctx.fill();
     });
+
+    if (glow) {
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = "transparent";
+    }
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -123,15 +151,17 @@ export default function MirrorMatch() {
     const [round, setRound] = useState(1);
     const [scores, setScores] = useState([0, 0]); // [p1score, p2score]
     const [copyTimeLeft, setCopyTimeLeft] = useState(COPY_TIME);
+    const [poseTimeLeft, setPoseTimeLeft] = useState(POSE_TIME);
     const [matchPct, setMatchPct] = useState(0);
     const [roundResult, setRoundResult] = useState(null); // { winner, pct }
-    const [lockProgress, setLockProgress] = useState(0); // 0-100
 
     // Refs for game loop
     const phaseRef = useRef("names");
     const round1Ref = useRef(1);
-    const lockHoldRef = useRef(0);
-    const lockedPoseRef = useRef(null);  // frozen P1 pose
+    const isP1PoserRef = useRef(true); // true = P1 poses this round (odd rounds), false = P2 poses
+    const lockedPoseRef = useRef(null);  // frozen poser's pose
+    const livePoserPoseRef = useRef(null); // updated every frame during locking so timer can snapshot it
+    const lockTimerRef = useRef(null);
     const copyTimerRef = useRef(null);
     const scoresRef = useRef([0, 0]);
     const smoothedPctRef = useRef(0);
@@ -178,7 +208,7 @@ export default function MirrorMatch() {
             }
 
             const res = lm.detectForVideo(video, performance.now());
-            let [pose1, pose2] = splitPoses(res.landmarks, video.videoWidth);
+            let [pose1, pose2] = splitPoses(res.landmarks);
 
             // Apply temporal smoothing
             pose1 = smoothPose(pose1, prevPose1Ref.current);
@@ -189,39 +219,84 @@ export default function MirrorMatch() {
             const ctx = canvas.getContext("2d");
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            if (phaseRef.current === "locking") {
-                // Draw both skeletons in dim mode
-                drawSkeleton(ctx, pose1, canvas.width, canvas.height, "rgba(66,133,244,0.8)", true);
-                drawSkeleton(ctx, pose2, canvas.width, canvas.height, "rgba(234,67,53,0.8)", true);
+            // Determine whose pose is whose based on current round parity
+            // isP1PoserRef: true = P1 poses this round, false = P2 poses
+            const poserPose  = isP1PoserRef.current ? pose1 : pose2;
+            const copierPose = isP1PoserRef.current ? pose2 : pose1;
+            const poserColor  = isP1PoserRef.current ? "rgba(66,133,244,0.8)"  : "rgba(234,67,53,0.8)";
+            const copierColor = isP1PoserRef.current ? "rgba(234,67,53,0.8)" : "rgba(66,133,244,0.8)";
 
-                // P1 must hold — track frames both landmarks detected and stable
-                if (pose1) {
-                    lockHoldRef.current++;
-                    setLockProgress(Math.min(100, Math.round((lockHoldRef.current / LOCK_HOLD) * 100)));
-                    if (lockHoldRef.current >= LOCK_HOLD) {
-                        lockedPoseRef.current = pose1;
-                        lockHoldRef.current = 0;
-                        setLockProgress(0);
-                        startCopyPhase();
-                    }
-                } else {
-                    lockHoldRef.current = Math.max(0, lockHoldRef.current - 2);
-                    setLockProgress(Math.max(0, Math.round((lockHoldRef.current / LOCK_HOLD) * 100)));
+            if (phaseRef.current === "locking") {
+                // Draw both skeletons so both players can see themselves
+                drawSkeleton(ctx, poserPose,  canvas.width, canvas.height, poserColor,  true);
+                drawSkeleton(ctx, copierPose, canvas.width, canvas.height, copierColor, true);
+
+                // Only store when we have a valid detection — never overwrite with null
+                if (poserPose) {
+                    livePoserPoseRef.current = poserPose;
                 }
             } else if (phaseRef.current === "copying") {
-                // Draw locked P1 pose ghosted (green)
-                drawSkeleton(ctx, lockedPoseRef.current, canvas.width, canvas.height, "rgba(52,168,83,0.4)", true);
-                // Draw live P2 skeleton (yellow)
-                drawSkeleton(ctx, pose2, canvas.width, canvas.height, "rgba(251,188,4,0.9)", true);
+                // Calculate horizontal shift to move the reference skeleton to the copier's side
+                let shiftedLockedPose = lockedPoseRef.current;
+                if (shiftedLockedPose) {
+                    const lockedHipX = getHipX(shiftedLockedPose);
+                    const copierHipX = getHipX(copierPose);
+                    // If copier is visible, track them exactly. Otherwise, default to their side of the screen.
+                    // isP1PoserRef true -> P2 is copier -> default raw X ~0.25 (visual right).
+                    // isP1PoserRef false -> P1 is copier -> default raw X ~0.75 (visual left).
+                    const targetX = copierHipX !== null ? copierHipX : (isP1PoserRef.current ? 0.25 : 0.75);
+                    if (lockedHipX !== null) {
+                        shiftedLockedPose = shiftPoseX(shiftedLockedPose, targetX - lockedHipX);
+                    }
+                }
 
-                const rawPct = comparePoses(lockedPoseRef.current, pose2) * 100;
+                // Draw live copier skeleton (yellow)
+                drawSkeleton(ctx, copierPose, canvas.width, canvas.height, "rgba(251,188,4,0.85)", true);
+                // Draw shifted locked reference skeleton with glow — visible and prominent
+                drawSkeleton(ctx, shiftedLockedPose, canvas.width, canvas.height, "rgba(52,168,83,0.95)", true, true);
+
+                const rawPct = comparePoses(lockedPoseRef.current, copierPose) * 100;
                 smoothedPctRef.current = smoothedPctRef.current * 0.7 + rawPct * 0.3;
                 setMatchPct(Math.round(smoothedPctRef.current));
+            } else if (phaseRef.current === "result") {
+                // Keep showing the shifted reference so players see the evaluated pose on the copier's side
+                let shiftedLockedPose = lockedPoseRef.current;
+                if (shiftedLockedPose) {
+                    const lockedHipX = getHipX(shiftedLockedPose);
+                    const copierHipX = getHipX(copierPose);
+                    const targetX = copierHipX !== null ? copierHipX : (isP1PoserRef.current ? 0.25 : 0.75);
+                    if (lockedHipX !== null) {
+                        shiftedLockedPose = shiftPoseX(shiftedLockedPose, targetX - lockedHipX);
+                    }
+                }
+                drawSkeleton(ctx, shiftedLockedPose, canvas.width, canvas.height, "rgba(52,168,83,0.5)", true, true);
+            } else if (phaseRef.current === "buffer") {
+                // Show both live skeletons during countdown so players can position themselves
+                drawSkeleton(ctx, pose1, canvas.width, canvas.height, "rgba(66,133,244,0.5)", true);
+                drawSkeleton(ctx, pose2, canvas.width, canvas.height, "rgba(234,67,53,0.5)", true);
             }
 
             animRef.current = requestAnimationFrame(loop);
         }
         animRef.current = requestAnimationFrame(loop);
+    }
+
+    function startLockPhase() {
+        setPhaseSync("locking");
+        setPoseTimeLeft(POSE_TIME);
+        livePoserPoseRef.current = null;
+        let t = POSE_TIME;
+        lockTimerRef.current = setInterval(() => {
+            t--;
+            if (t <= 3) playTick();
+            setPoseTimeLeft(t);
+            if (t <= 0) {
+                clearInterval(lockTimerRef.current);
+                // Snapshot whatever pose the poser is in right now
+                lockedPoseRef.current = livePoserPoseRef.current;
+                startCopyPhase();
+            }
+        }, 1000);
     }
 
     function startCopyPhase() {
@@ -241,13 +316,11 @@ export default function MirrorMatch() {
 
     function endRound() {
         setPhaseSync("result");
-        // Read final match pct from state via ref trick
-        const pct = Math.round(comparePoses(lockedPoseRef.current, null) * 100); // fallback
-        // We'll use the last setMatchPct value — read via a dedicated ref
+        // Use the smoothed match % accumulated during the copy phase
         const finalPct = lastMatchRef.current;
 
-        // Determine who scored: copier (P2 when round is odd, P1 when even) scores if pct > 60
-        const isP1Copying = round1Ref.current % 2 === 0;
+        // Who was copying this round? Odd rounds: P1 poses → P2 copies. Even rounds: P2 poses → P1 copies.
+        const isP1Copying = round1Ref.current % 2 === 0; // even round → P1 copies
         const winner = finalPct >= 60 ? (isP1Copying ? 0 : 1) : -1;
 
         const newScores = [...scoresRef.current];
@@ -274,11 +347,16 @@ export default function MirrorMatch() {
                 addEntry("mirror", { name: w, score: topScore });
             } else {
                 round1Ref.current = nextRound;
+                // Odd rounds → P1 poses; even rounds → P2 poses
+                isP1PoserRef.current = nextRound % 2 === 1;
                 setRound(nextRound);
                 setRoundResult(null);
-                lockHoldRef.current = 0;
                 lockedPoseRef.current = null;
+                livePoserPoseRef.current = null;
                 smoothedPctRef.current = 0;
+                // Reset smoothing so old poses don't bleed into the new round
+                prevPose1Ref.current = null;
+                prevPose2Ref.current = null;
                 startBuffer();
             }
         }, 2500);
@@ -292,7 +370,7 @@ export default function MirrorMatch() {
             c--;
             if (c <= 0) {
                 clearInterval(bufInt);
-                setPhaseSync("locking");
+                startLockPhase();
             } else {
                 setBufferCountdown(c);
             }
@@ -306,6 +384,7 @@ export default function MirrorMatch() {
     useEffect(() => {
         return () => {
             cancelAnimationFrame(animRef.current);
+            clearInterval(lockTimerRef.current);
             clearInterval(copyTimerRef.current);
         };
     }, []);
@@ -391,7 +470,7 @@ export default function MirrorMatch() {
                     </div>
 
                     <div className="flex gap-4 mt-4">
-                        <button onClick={() => { setPhase("names"); setScores([0,0]); scoresRef.current=[0,0]; setRound(1); round1Ref.current=1; }}
+                        <button onClick={() => { setPhase("names"); setScores([0,0]); scoresRef.current=[0,0]; setRound(1); round1Ref.current=1; isP1PoserRef.current=true; lockedPoseRef.current=null; livePoserPoseRef.current=null; prevPose1Ref.current=null; prevPose2Ref.current=null; smoothedPctRef.current=0; }}
                             className="px-10 py-4 font-black uppercase tracking-wider rounded-2xl text-white transition-all hover:scale-105 active:scale-95"
                             style={{ background: "linear-gradient(135deg, #4285F4, #EA4335)", boxShadow: "0 0 30px rgba(66,133,244,0.4)" }}>
                             Play Again 🪞
@@ -407,42 +486,7 @@ export default function MirrorMatch() {
         );
     }
 
-    // ── BUFFER screen (between rounds) ───────────────────────────────────────────
-    if (phase === "buffer") {
-        return (
-            <Background>
-                <div className="relative w-full h-screen">
-                    <Webcam ref={webcamRef} mirrored={true} audio={false}
-                        videoConstraints={{ width: 1280, height: 720, facingMode: "user" }}
-                        className="absolute inset-0 w-full h-full object-contain" />
-                    <canvas ref={canvasRef}
-                        className="absolute inset-0 w-full h-full pointer-events-none" />
-
-                    {/* Dark overlay */}
-                    <div className="absolute inset-0 flex flex-col items-center justify-center z-30"
-                        style={{ background: "rgba(9,10,15,0.75)" }}>
-                        <div className="text-white/30 text-lg font-black uppercase tracking-widest mb-2">Round {round} of {ROUNDS}</div>
-                        <div className="text-6xl mb-4" key={`buf-${bufferCountdown}`}>{bufferCountdown}</div>
-                        <div className="text-3xl font-black text-white mb-2">
-                            {poserName}'s turn to pose!
-                        </div>
-                        <div className="flex items-center gap-3 mt-2">
-                            <span className="text-lg font-black" style={{ color: isP1Poser ? "#4285F4" : "#EA4335" }}>
-                                {poserName} 🎯
-                            </span>
-                            <span className="text-white/30 text-lg">→</span>
-                            <span className="text-lg font-black" style={{ color: isP1Poser ? "#EA4335" : "#4285F4" }}>
-                                {copierName} 📋
-                            </span>
-                        </div>
-                        <p className="text-white/40 text-sm font-semibold mt-4">Get into position!</p>
-                    </div>
-                </div>
-            </Background>
-        );
-    }
-
-    // ── GAME screen (locking / copying / result) ────────────────────────────────────────
+    // ── GAME screen (buffer / locking / copying / result) ────────────────────────
     const barColor = matchPct >= 80 ? "#34A853" : matchPct >= 50 ? "#FBBC04" : "#EA4335";
 
     return (
@@ -464,7 +508,8 @@ export default function MirrorMatch() {
                         <span className="text-white/60 text-xs font-black uppercase tracking-widest">Round {round}/{ROUNDS}</span>
                     </div>
                     <div className="text-white font-black text-xl">
-                        {phase === "locking" ? `${poserName} — Strike a pose!` :
+                        {phase === "buffer" ? "Get ready..." :
+                         phase === "locking" ? `${poserName} — Strike a pose!` :
                          phase === "copying" ? `${copierName} — Copy it!` :
                          roundResult?.winner >= 0 ? `✅ +1 for ${roundResult.isP1Copying ? p1Name : p2Name}!` : "❌ No point"}
                     </div>
@@ -477,7 +522,7 @@ export default function MirrorMatch() {
                 </div>
             </div>
 
-            {/* Webcam + skeleton canvas */}
+            {/* Webcam + skeleton canvas — ONE instance shared across all active phases */}
             <div className="relative w-full h-screen">
                 <Webcam ref={webcamRef} mirrored={true} audio={false}
                     videoConstraints={{ width: 1280, height: 720, facingMode: "user" }}
@@ -499,17 +544,45 @@ export default function MirrorMatch() {
                     {p2Name} {!isP1Poser && phase === "locking" ? "🎯 POSE" : isP1Poser && phase === "copying" ? "📋 COPY" : ""}
                 </div>
 
-                {/* Locking progress bar — wider, bigger text */}
-                {phase === "locking" && (
-                    <div className="absolute bottom-28 left-1/2 -translate-x-1/2 w-96 z-20"
-                        style={{ background: "rgba(9,10,15,0.7)", backdropFilter: "blur(8px)", borderRadius: "1rem", padding: "1rem 1.5rem" }}>
-                        <p className="text-center text-white/70 text-base font-black mb-3 uppercase tracking-wider">
-                            🎯 {poserName}: hold your pose to lock it in
-                        </p>
-                        <div className="w-full h-4 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.12)" }}>
-                            <div className="h-full rounded-full transition-all duration-100"
-                                style={{ width: `${lockProgress}%`, background: "linear-gradient(90deg, #4285F4, #34A853)" }} />
+                {/* Buffer countdown overlay */}
+                {phase === "buffer" && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center z-30"
+                        style={{ background: "rgba(9,10,15,0.75)" }}>
+                        <div className="text-white/30 text-lg font-black uppercase tracking-widest mb-2">Round {round} of {ROUNDS}</div>
+                        <div className="text-6xl mb-4" key={`buf-${bufferCountdown}`}>{bufferCountdown}</div>
+                        <div className="text-3xl font-black text-white mb-2">
+                            {poserName}'s turn to pose!
                         </div>
+                        <div className="flex items-center gap-3 mt-2">
+                            <span className="text-lg font-black" style={{ color: isP1Poser ? "#4285F4" : "#EA4335" }}>
+                                {poserName} 🎯
+                            </span>
+                            <span className="text-white/30 text-lg">→</span>
+                            <span className="text-lg font-black" style={{ color: isP1Poser ? "#EA4335" : "#4285F4" }}>
+                                {copierName} 📋
+                            </span>
+                        </div>
+                        <p className="text-white/40 text-sm font-semibold mt-4">Get into position!</p>
+                    </div>
+                )}
+
+                {/* Pose timer countdown */}
+                {phase === "locking" && (
+                    <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-3"
+                        style={{ background: "rgba(9,10,15,0.7)", backdropFilter: "blur(8px)", borderRadius: "1rem", padding: "1rem 1.5rem", minWidth: "18rem" }}>
+                        <p className="text-center text-white/70 text-base font-black uppercase tracking-wider">
+                            🎯 {poserName}: strike a pose!
+                        </p>
+                        <div className="flex items-center justify-center w-16 h-16 rounded-full font-black text-3xl"
+                            style={{
+                                border: `3px solid ${poseTimeLeft <= 2 ? '#EA4335' : '#4285F4'}`,
+                                color: poseTimeLeft <= 2 ? "#EA4335" : "#4285F4",
+                                background: "rgba(9,10,15,0.8)",
+                                animation: poseTimeLeft <= 2 ? "pulseGlow 0.5s ease-in-out infinite" : "none",
+                            }}>
+                            {poseTimeLeft}
+                        </div>
+                        <p className="text-white/40 text-xs font-bold">Pose locks when timer hits 0</p>
                     </div>
                 )}
 

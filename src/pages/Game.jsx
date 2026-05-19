@@ -155,8 +155,10 @@ export default function Game() {
     const smoothedScoreRef = useRef(0);
     const prevPoseRef = useRef(null);
     const bestSnapshotRef = useRef(null);
+    const holdStartRef = useRef(null); // timestamp when match first hit >=0.70
+    const advancingRef = useRef(false); // guard so we only advance once per meme
 
-    const [tooManyPeople, setTooManyPeople] = useState(false);
+    const [holdPct, setHoldPct] = useState(0); // 0-100 for the hold progress UI
 
     // Start extraction only after name is entered
     useEffect(() => {
@@ -173,7 +175,10 @@ export default function Game() {
     // Countdown timer — resets on meme change
     useEffect(() => {
         if (loading || memes.length === 0) return;
-        setTimeLeft(10);
+        setTimeLeft(15);
+        holdStartRef.current = null;
+        advancingRef.current = false;
+        setHoldPct(0);
         if (timerRef.current) clearInterval(timerRef.current);
         timerRef.current = setInterval(() => {
             setTimeLeft(prev => {
@@ -182,7 +187,7 @@ export default function Game() {
                     clearInterval(timerRef.current);
                     
                     // Snapshot evaluation moment
-                    if (smoothedScoreRef.current > 0.70) {
+                    if (smoothedScoreRef.current > 0.62) {
                         setScore(s => {
                             const newScore = s + 1;
                             scoreRef.current = newScore;
@@ -221,8 +226,11 @@ export default function Game() {
                     }
                     
                     smoothedScoreRef.current = 0;
+                    holdStartRef.current = null;
+                    advancingRef.current = false;
+                    setHoldPct(0);
                     advanceMeme();
-                    return 10;
+                    return 15;
                 }
                 if (prev <= 3) playTick();
                 return prev - 1;
@@ -371,6 +379,24 @@ export default function Game() {
         });
     }
 
+    // Pick the person closest to the camera from all detected poses.
+    // Proxy: largest torso height (shoulder-center → hip-center distance in
+    // normalised coords) = person occupying most frame = closest to lens.
+    function pickClosestPose(landmarks) {
+        if (!landmarks || landmarks.length === 0) return null;
+        if (landmarks.length === 1) return landmarks[0];
+        let best = null, bestSize = -1;
+        for (const pose of landmarks) {
+            const ls = pose[11], rs = pose[12], lh = pose[23], rh = pose[24];
+            if (!ls || !rs || !lh || !rh) continue;
+            const scx = (ls.x + rs.x) / 2, scy = (ls.y + rs.y) / 2;
+            const hcx = (lh.x + rh.x) / 2, hcy = (lh.y + rh.y) / 2;
+            const size = Math.sqrt((scx - hcx) ** 2 + (scy - hcy) ** 2);
+            if (size > bestSize) { bestSize = size; best = pose; }
+        }
+        return best ?? landmarks[0];
+    }
+
     async function detect(poseLandmarker) {
         async function frameLandmarks() {
             if (
@@ -384,15 +410,8 @@ export default function Game() {
                     performance.now()
                 );
 
-                if (results.landmarks && results.landmarks.length > 1) {
-                    setTooManyPeople(true);
-                    pausedRef.current = true;
-                } else {
-                    setTooManyPeople(false);
-                    pausedRef.current = false;
-                }
-
-                const rawUserPose = results.landmarks?.[0];
+                // Always use the closest person — no blocking for crowds
+                const rawUserPose = pickClosestPose(results.landmarks);
                 let userPose = mirrorPose(rawUserPose);
                 
                 // Apply temporal smoothing to reduce jitter
@@ -407,6 +426,52 @@ export default function Game() {
                 smoothedScoreRef.current = smoothedScoreRef.current * 0.7 + rawScore * 0.3;
                 const matchScore = smoothedScoreRef.current;
                 setMatchScore(matchScore);
+
+                // ── Hold-to-advance: 2 seconds at >=62% → score + skip immediately
+                if (matchScore >= 0.62 && !advancingRef.current) {
+                    if (holdStartRef.current === null) {
+                        holdStartRef.current = performance.now();
+                    }
+                    const elapsed = performance.now() - holdStartRef.current;
+                    const pct = Math.min(100, Math.round((elapsed / 2000) * 100));
+                    setHoldPct(pct);
+
+                    if (elapsed >= 2000) {
+                        advancingRef.current = true;
+                        holdStartRef.current = null;
+                        setHoldPct(0);
+                        clearInterval(timerRef.current);
+
+                        // Award score
+                        setScore(s => { const n = s + 1; scoreRef.current = n; return n; });
+                        setShowScorePopup(true);
+                        if (webcamRef.current) bestSnapshotRef.current = webcamRef.current.getScreenshot();
+                        streakRef.current += 1;
+                        setStreak(streakRef.current);
+                        setBestStreak(b => { const nb = Math.max(b, streakRef.current); bestStreakRef.current = nb; return nb; });
+                        playScore();
+                        if (streakRef.current >= 3) {
+                            playStreak();
+                            const emojis = ['🔥', '⭐', '🎉', '💥', '✨', '🤩'];
+                            const burst = Array.from({ length: 8 }, (_, i) => ({
+                                id: Date.now() + i,
+                                emoji: emojis[Math.floor(Math.random() * emojis.length)],
+                                left: 30 + Math.random() * 40,
+                                delay: Math.random() * 0.3,
+                            }));
+                            setConfettiEmojis(burst);
+                            setTimeout(() => setConfettiEmojis([]), 1200);
+                        }
+                        setTimeout(() => setShowScorePopup(false), 1200);
+
+                        smoothedScoreRef.current = 0;
+                        advanceMeme();
+                    }
+                } else if (matchScore < 0.62) {
+                    // Reset hold window if pose is lost
+                    holdStartRef.current = null;
+                    setHoldPct(0);
+                }
             }
 
             requestAnimationFrame(frameLandmarks);
@@ -548,9 +613,9 @@ export default function Game() {
     const accentColor = GDSC_ACCENTS[currentIndex % GDSC_ACCENTS.length];
 
     const matchPct = Math.round(matchScore * 100);
-    const barColor = matchScore > 0.70
+    const barColor = matchScore > 0.62
         ? "#34A853"
-        : matchScore > 0.50
+        : matchScore > 0.45
         ? "#FBBC04"
         : "#EA4335";
 
@@ -724,19 +789,6 @@ export default function Game() {
                                 You
                             </div>
 
-                            {/* Multiple People Overlay */}
-                            {tooManyPeople && (
-                                <div className="absolute inset-0 flex flex-col items-center justify-center z-20"
-                                    style={{ background: "rgba(234,67,53,0.85)", backdropFilter: "blur(8px)" }}>
-                                    <div className="text-6xl mb-2 animate-bounce">⚠️</div>
-                                    <div className="text-white font-black text-2xl uppercase tracking-widest text-center px-4">
-                                        Multiple People Detected!
-                                    </div>
-                                    <div className="text-white/80 font-bold text-sm mt-2 text-center px-4">
-                                        Only one person can play at a time.<br/>Please step out of the frame.
-                                    </div>
-                                </div>
-                            )}
                         </div>
 
                         {/* Match bar */}
@@ -758,13 +810,35 @@ export default function Game() {
                                     style={{
                                         width: `${matchPct}%`,
                                         background: `linear-gradient(90deg, ${barColor}99, ${barColor})`,
-                                        boxShadow: matchScore > 0.70 ? `0 0 12px 3px ${barColor}88` : "none",
+                                        boxShadow: matchScore > 0.62 ? `0 0 12px 3px ${barColor}88` : "none",
                                         transition: "width 0.1s, background 0.2s, box-shadow 0.2s",
                                     }}
                                 />
                             </div>
+
+                            {/* Hold-to-advance progress — only visible when pose is good */}
+                            {holdPct > 0 && (
+                                <div className="mt-2">
+                                    <div className="flex justify-between items-baseline mb-1">
+                                        <span className="text-xs font-black uppercase tracking-widest" style={{ color: "#34A853" }}>🟢 Hold!</span>
+                                        <span className="text-xs font-bold" style={{ color: "#34A853" }}>{holdPct}%</span>
+                                    </div>
+                                    <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "rgba(52,168,83,0.15)" }}>
+                                        <div
+                                            className="h-full rounded-full"
+                                            style={{
+                                                width: `${holdPct}%`,
+                                                background: "linear-gradient(90deg, #34A853aa, #34A853)",
+                                                boxShadow: "0 0 8px 2px #34A85388",
+                                                transition: "width 0.05s linear",
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
                             <p className="text-center text-white/25 text-xs mt-2 font-semibold">
-                                {matchScore > 0.70 ? "🟢 Hold it..." : matchScore > 0.50 ? "🟡 Getting close!" : "🔴 Strike the pose!"}
+                                {matchScore > 0.62 ? "🟢 Hold it..." : matchScore > 0.45 ? "🟡 Getting close!" : "🔴 Strike the pose!"}
                             </p>
                         </div>
                     </div>
