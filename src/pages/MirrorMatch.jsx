@@ -109,27 +109,9 @@ function getHipX(pose) {
     return (pose[23].x + (pose[24]?.x ?? pose[23].x)) / 2;
 }
 
-function shiftPoseX(pose, dx) {
-    if (!pose) return null;
-    return pose.map(p => ({
-        ...p,
-        x: p.x + dx
-    }));
-}
-
 function clonePose(pose) {
     if (!pose) return null;
     return pose.map(p => ({ ...p }));
-}
-
-// Shift the locked poser skeleton onto the copier's side once (not every frame).
-function buildDisplayLockedPose(lockedPose, copierPose, isP1Poser) {
-    if (!lockedPose) return null;
-    const lockedHipX = getHipX(lockedPose);
-    const copierHipX = getHipX(copierPose);
-    const targetX = copierHipX !== null ? copierHipX : (isP1Poser ? 0.25 : 0.75);
-    if (lockedHipX === null) return clonePose(lockedPose);
-    return shiftPoseX(lockedPose, targetX - lockedHipX);
 }
 
 function drawSkeleton(ctx, pose, w, h, color, mirror = false, glow = false) {
@@ -195,9 +177,8 @@ export default function MirrorMatch() {
     const round1Ref = useRef(1);
     const isP1PoserRef = useRef(true); // true = P1 poses this round (odd rounds), false = P2 poses
     const lockedPoseRef = useRef(null);  // frozen poser's pose (raw coords, for scoring)
-    const displayLockedPoseRef = useRef(null); // locked pose shifted once to copier's side (for drawing)
     const livePoserPoseRef = useRef(null); // updated every frame during locking so timer can snapshot it
-    const copierPoseAtLockRef = useRef(null); // copier pose at lock time — used for one-time display shift
+    const lastValidPoserPoseRef = useRef(null); // tracks last valid poser pose during locking (fallback for null poses)
     const lockTimerRef = useRef(null);
     const copyTimerRef = useRef(null);
     const scoresRef = useRef([0, 0]);
@@ -265,28 +246,25 @@ export default function MirrorMatch() {
             const copierColor = isP1PoserRef.current ? "rgba(234,67,53,0.8)" : "rgba(66,133,244,0.8)";
 
             if (phaseRef.current === "locking") {
-                // Draw both skeletons so both players can see themselves
+                // Draw ONLY the poser's skeleton (Bug 3 fix)
                 drawSkeleton(ctx, poserPose,  canvas.width, canvas.height, poserColor,  true);
-                drawSkeleton(ctx, copierPose, canvas.width, canvas.height, copierColor, true);
 
-                // Only store when we have a valid detection — never overwrite with null
+                // Store current pose AND track last valid pose (Bug 2 fix)
                 if (poserPose) {
                     livePoserPoseRef.current = poserPose;
-                }
-                if (copierPose) {
-                    copierPoseAtLockRef.current = copierPose;
+                    lastValidPoserPoseRef.current = poserPose;  // Track last valid
                 }
             } else if (phaseRef.current === "copying") {
                 // Draw live copier skeleton (yellow)
                 drawSkeleton(ctx, copierPose, canvas.width, canvas.height, "rgba(251,188,4,0.85)", true);
-                // Draw frozen reference skeleton (green) — position fixed at lock time
-                drawSkeleton(ctx, displayLockedPoseRef.current, canvas.width, canvas.height, "rgba(52,168,83,0.95)", true, true);
+                // Draw frozen reference skeleton (green) at ORIGINAL position (no shifting)
+                drawSkeleton(ctx, lockedPoseRef.current, canvas.width, canvas.height, "rgba(52,168,83,0.95)", true, true);
 
                 const rawPct = comparePoses(lockedPoseRef.current, copierPose) * 100;
                 smoothedPctRef.current = smoothedPctRef.current * 0.7 + rawPct * 0.3;
                 setMatchPct(Math.round(smoothedPctRef.current));
             } else if (phaseRef.current === "result") {
-                drawSkeleton(ctx, displayLockedPoseRef.current, canvas.width, canvas.height, "rgba(52,168,83,0.5)", true, true);
+                drawSkeleton(ctx, lockedPoseRef.current, canvas.width, canvas.height, "rgba(52,168,83,0.5)", true, true);
             } else if (phaseRef.current === "buffer") {
                 // Show both live skeletons during countdown so players can position themselves
                 drawSkeleton(ctx, pose1, canvas.width, canvas.height, "rgba(66,133,244,0.5)", true);
@@ -302,8 +280,7 @@ export default function MirrorMatch() {
         setPhaseSync("locking");
         setPoseTimeLeft(POSE_TIME);
         livePoserPoseRef.current = null;
-        copierPoseAtLockRef.current = null;
-        displayLockedPoseRef.current = null;
+        lastValidPoserPoseRef.current = null;
         let t = POSE_TIME;
         lockTimerRef.current = setInterval(() => {
             t--;
@@ -311,13 +288,14 @@ export default function MirrorMatch() {
             setPoseTimeLeft(t);
             if (t <= 0) {
                 clearInterval(lockTimerRef.current);
-                // Snapshot poser pose (deep copy so smoothing can't mutate it later)
-                lockedPoseRef.current = clonePose(livePoserPoseRef.current);
-                displayLockedPoseRef.current = buildDisplayLockedPose(
-                    lockedPoseRef.current,
-                    copierPoseAtLockRef.current,
-                    isP1PoserRef.current
-                );
+                // Use fallback: if current pose is null, use last valid pose
+                const poseToLock = livePoserPoseRef.current || lastValidPoserPoseRef.current;
+                
+                // Snapshot poser pose at ORIGINAL position (deep copy so smoothing can't mutate it later)
+                lockedPoseRef.current = clonePose(poseToLock);
+                
+                // DO NOT shift the pose - keep it at the original position
+                // displayLockedPoseRef is no longer needed - we'll render lockedPoseRef directly
                 startCopyPhase();
             }
         }, 1000);
@@ -376,9 +354,8 @@ export default function MirrorMatch() {
                 setRound(nextRound);
                 setRoundResult(null);
                 lockedPoseRef.current = null;
-                displayLockedPoseRef.current = null;
-                copierPoseAtLockRef.current = null;
                 livePoserPoseRef.current = null;
+                lastValidPoserPoseRef.current = null;
                 smoothedPctRef.current = 0;
                 // Reset smoothing so old poses don't bleed into the new round
                 prevPose1Ref.current = null;
@@ -496,7 +473,7 @@ export default function MirrorMatch() {
                     </div>
 
                     <div className="flex gap-4 mt-4">
-                        <button onClick={() => { setPhase("names"); setScores([0,0]); scoresRef.current=[0,0]; setRound(1); round1Ref.current=1; isP1PoserRef.current=true; lockedPoseRef.current=null; displayLockedPoseRef.current=null; copierPoseAtLockRef.current=null; livePoserPoseRef.current=null; prevPose1Ref.current=null; prevPose2Ref.current=null; smoothedPctRef.current=0; }}
+                        <button onClick={() => { setPhase("names"); setScores([0,0]); scoresRef.current=[0,0]; setRound(1); round1Ref.current=1; isP1PoserRef.current=true; lockedPoseRef.current=null; livePoserPoseRef.current=null; lastValidPoserPoseRef.current=null; prevPose1Ref.current=null; prevPose2Ref.current=null; smoothedPctRef.current=0; }}
                             className="px-10 py-4 font-black uppercase tracking-wider rounded-2xl text-white transition-all hover:scale-105 active:scale-95"
                             style={{ background: "linear-gradient(135deg, #4285F4, #EA4335)", boxShadow: "0 0 30px rgba(66,133,244,0.4)" }}>
                             Play Again 🪞

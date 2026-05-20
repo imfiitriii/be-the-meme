@@ -1,127 +1,158 @@
 # Implementation Plan
 
-- [ ] 1. Write bug condition exploration test
-  - **Property 1: Bug Condition** - Green Skeleton Invisible When Poses Are Null at Lock Time
-  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - Green Skeleton Teleports and Visibility Issues
+  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bugs exist
   - **DO NOT attempt to fix the test or the code when it fails**
   - **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
-  - **GOAL**: Surface counterexamples that demonstrate the bug exists
+  - **GOAL**: Surface counterexamples that demonstrate all three bugs exist
   - **Scoped PBT Approach**: For deterministic bugs, scope the property to the concrete failing case(s) to ensure reproducibility
   - Test implementation details from Bug Condition in design:
-    - Simulate lock timer expiring when `livePoserPoseRef.current` is null (pose detection failed in last frame)
-    - Simulate lock timer expiring when `copierPoseAtLockRef.current` is null (copier stepped out of frame)
-    - Simulate lock timer expiring when both poses are null
-    - Verify that `lockedPoseRef.current` and `displayLockedPoseRef.current` are null
-    - Verify that green skeleton is not rendered (invisible)
+    - **Bug 1 (Teleporting)**: Simulate lock timer expiring with poser at hip X = 0.7, copier at X = 0.3. Verify that `buildDisplayLockedPose` shifts the pose from 0.7 to 0.3 (demonstrates teleportation bug)
+    - **Bug 2 (Visibility)**: Simulate lock timer expiring when `livePoserPoseRef.current` is null (pose detection failed in last frame). Verify that `lockedPoseRef.current` is null and green skeleton is invisible
+    - **Bug 3 (Locking Phase)**: During locking phase, verify that both poser's and copier's skeletons are rendered (should only show poser's skeleton)
   - The test assertions should match the Expected Behavior Properties from design:
-    - Green skeleton should be visible even when poses are null at lock time
-    - System should use last valid poser pose detected during locking phase
-    - System should use default position for copier when copier pose is null
+    - Green skeleton should stay at poser's ORIGINAL position (no shifting to copier's side)
+    - Green skeleton should be visible even when poses are null at lock time (use last valid pose)
+    - Only poser's skeleton should be visible during locking phase (not copier's)
   - Run test on UNFIXED code
-  - **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bugs exist)
   - Document counterexamples found to understand root cause:
-    - Example 1: Lock timer expires with null `livePoserPoseRef.current` → `lockedPoseRef.current` is null → green skeleton invisible
-    - Example 2: Lock timer expires with null `copierPoseAtLockRef.current` → `displayLockedPoseRef.current` is null → green skeleton invisible
-    - Example 3: Intermittent pose detection failures during locking phase → valid pose data overwritten with null → green skeleton invisible
+    - Example 1: Green skeleton position changes from 0.7 to 0.3 (teleportation)
+    - Example 2: Lock timer expires with null `livePoserPoseRef.current` → green skeleton invisible
+    - Example 3: Both skeletons visible during locking phase (should only show poser's)
   - Mark task complete when test is written, run, and failure is documented
-  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10_
 
-- [ ] 2. Write preservation property tests (BEFORE implementing fix)
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
   - **Property 2: Preservation** - Existing Behavior Unchanged for Normal Operation
   - **IMPORTANT**: Follow observation-first methodology
-  - Observe behavior on UNFIXED code for non-buggy inputs (both poses detected at lock time)
+  - Observe behavior on UNFIXED code for non-buggy inputs (both poses detected at lock time, normal operation)
   - Write property-based tests capturing observed behavior patterns from Preservation Requirements:
-    - **Test 1**: Both players see their own skeletons during locking phase (poser in blue/red, copier in red/blue)
-    - **Test 2**: Copier's live skeleton renders in yellow during copying phase
-    - **Test 3**: Match percentage calculation uses `comparePoses(lockedPoseRef.current, copierPose)` during copying phase
-    - **Test 4**: Green reference skeleton has glow effect (green color with shadow blur)
-    - **Test 5**: Round transitions reset all pose references to null
-    - **Test 6**: Temporal smoothing applies to pose1 and pose2 but NOT to frozen locked pose
-    - **Test 7**: Result phase displays frozen green reference skeleton with reduced opacity (0.5)
+    - **Test 1**: Copier's live skeleton renders in yellow during copying phase
+    - **Test 2**: Match percentage calculation uses `comparePoses(lockedPoseRef.current, copierPose)` during copying phase
+    - **Test 3**: Green reference skeleton has glow effect (green color with shadow blur)
+    - **Test 4**: Round transitions reset all pose references to null
+    - **Test 5**: Temporal smoothing applies to pose1 and pose2 but NOT to frozen locked pose
+    - **Test 6**: Result phase displays frozen green reference skeleton with reduced opacity (0.5)
+    - **Test 7**: Buffer phase shows both players' live skeletons with reduced opacity for positioning
+    - **Test 8**: Pose splitting uses `splitPoses` to separate Player 1 (visual left, hip X > 0.5) from Player 2 (visual right, hip X <= 0.5)
   - Property-based testing generates many test cases for stronger guarantees
   - Run tests on UNFIXED code
   - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
   - Mark task complete when tests are written, run, and passing on unfixed code
-  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9_
 
-- [ ] 3. Fix for green reference skeleton visibility and stability
+- [x] 3. Fix for green skeleton teleportation, visibility, and locking phase issues
 
-  - [ ] 3.1 Add last valid pose tracking refs
+  - [x] 3.1 Add last valid pose tracking ref (Change 2 - Bug 2 Fix)
     - Add `lastValidPoserPoseRef` ref to track most recent valid poser pose during locking phase
-    - Add `lastValidCopierPoseRef` ref to track most recent valid copier pose during locking phase
-    - Initialize both refs alongside other refs in component (set to null initially)
-    - _Bug_Condition: isBugCondition(input) where input.lockTimerExpired == true AND (input.livePoserPose == null OR input.copierPoseAtLock == null)_
-    - _Expected_Behavior: System SHALL use last valid poser pose when current pose is null at lock time (requirement 2.1, 2.5)_
-    - _Preservation: Must not affect existing ref initialization or round transitions (requirement 3.5)_
-    - _Requirements: 2.1, 2.5, 3.5_
+    - Initialize ref alongside other refs in component (around line 230, set to null initially)
+    - This ref will be used as fallback when `livePoserPoseRef.current` is null at lock time
+    - _Bug_Condition: isBugCondition_Invisible(input) where lock timer expires with null livePoserPose_
+    - _Expected_Behavior: System SHALL use last valid poser pose when current pose is null at lock time (requirements 2.5, 2.6, 2.7, 2.8, 2.9)_
+    - _Preservation: Must not affect existing ref initialization (requirement 3.4)_
+    - _Requirements: 2.5, 2.6, 2.7, 2.8, 2.9, 3.4_
 
-  - [ ] 3.2 Update pose tracking in game loop during locking phase
+  - [x] 3.2 Update locking phase to track last valid pose and show only poser (Change 2 - Bug 2 & Bug 3 Fix)
     - Locate the locking phase section in the game loop (around lines 360-366)
-    - Modify to update both current pose refs AND last valid pose refs:
+    - **Bug 3 Fix**: Remove the line that draws the copier's skeleton during locking phase
+    - **Bug 2 Fix**: Update pose tracking to preserve last valid pose:
       - When `poserPose` is valid: update both `livePoserPoseRef.current` and `lastValidPoserPoseRef.current`
-      - When `copierPose` is valid: update both `copierPoseAtLockRef.current` and `lastValidCopierPoseRef.current`
-    - This ensures last valid poses are preserved even when detection temporarily fails
-    - _Bug_Condition: isBugCondition(input) where valid pose data is overwritten with null during locking phase_
-    - _Expected_Behavior: System SHALL preserve last valid pose data and only update when new valid pose is detected (requirement 2.5)_
-    - _Preservation: Must continue to show both skeletons during locking phase (requirement 3.1)_
-    - _Requirements: 2.5, 3.1_
+    - Remove the copier pose tracking during locking phase (no longer needed)
+    - This ensures: (1) only poser's skeleton is visible during locking, (2) last valid pose is preserved
+    - _Bug_Condition: isBugCondition_Invisible(input) AND isBugCondition_LockingVisibility(input)_
+    - _Expected_Behavior: System SHALL preserve last valid pose data and show only poser's skeleton during locking (requirements 2.9, 2.10)_
+    - _Preservation: Must not affect skeleton rendering in other phases (requirements 3.1, 3.8)_
+    - _Requirements: 2.9, 2.10, 3.1, 3.8_
 
-  - [ ] 3.3 Add fallback logic at lock timer expiration
+  - [x] 3.3 Remove pose shifting logic at lock timer expiration (Change 1 - Bug 1 Fix)
     - Locate the lock timer expiration logic in `startLockPhase` function (around lines 447-454)
-    - Add fallback logic before cloning poses:
-      - `const poseToLock = livePoserPoseRef.current || lastValidPoserPoseRef.current;`
-      - `const copierPoseForPositioning = copierPoseAtLockRef.current || lastValidCopierPoseRef.current;`
-    - Use these fallback values when calling `clonePose` and `buildDisplayLockedPose`
-    - This ensures green skeleton is always visible even when current poses are null
-    - _Bug_Condition: isBugCondition(input) where lock timer expires with null current poses_
-    - _Expected_Behavior: System SHALL use last valid poses to ensure green skeleton is visible (requirements 2.1, 2.2, 2.3, 2.4)_
-    - _Preservation: Must not affect normal operation when both poses are detected (requirement 3.1, 3.2, 3.3, 3.4)_
-    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1, 3.2, 3.3, 3.4_
+    - **Bug 1 Fix**: Remove the call to `buildDisplayLockedPose` and the `displayLockedPoseRef` assignment
+    - **Bug 2 Fix**: Add fallback logic: `const poseToLock = livePoserPoseRef.current || lastValidPoserPoseRef.current;`
+    - Update to: `lockedPoseRef.current = clonePose(poseToLock);`
+    - Remove: `displayLockedPoseRef.current = buildDisplayLockedPose(...)` (this causes teleportation)
+    - Add comment: "// DO NOT shift the pose - keep it at the original position"
+    - This ensures green skeleton stays at poser's ORIGINAL position (no shifting to copier's side)
+    - _Bug_Condition: isBugCondition_Teleport(input) AND isBugCondition_Invisible(input)_
+    - _Expected_Behavior: System SHALL keep green skeleton at poser's original position and use fallback for visibility (requirements 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8)_
+    - _Preservation: Must not affect match percentage calculation (requirement 3.2)_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 3.2_
 
-  - [ ] 3.4 Reset last valid pose refs on round transitions
-    - Locate round transition logic (around lines 500-510 in `endRound` function)
-    - Add reset statements for new refs:
-      - `lastValidPoserPoseRef.current = null;`
-      - `lastValidCopierPoseRef.current = null;`
-    - Also reset at start of `startLockPhase` function (around line 435)
+  - [x] 3.4 Update copying phase to render lockedPoseRef directly (Change 3 - Bug 1 Fix)
+    - Locate the copying phase section in the game loop (around lines 368-375)
+    - Change green skeleton rendering from `displayLockedPoseRef.current` to `lockedPoseRef.current`
+    - This renders the green skeleton at its ORIGINAL position (not shifted)
+    - Keep all other logic unchanged (yellow copier skeleton, match percentage calculation)
+    - _Bug_Condition: isBugCondition_Teleport(input) where green skeleton is rendered during copying phase_
+    - _Expected_Behavior: System SHALL render green skeleton at poser's original position (requirements 2.1, 2.2, 2.3, 2.4)_
+    - _Preservation: Must continue to render copier's live skeleton in yellow and calculate match percentage (requirements 3.1, 3.2, 3.3)_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1, 3.2, 3.3_
+
+  - [x] 3.5 Update result phase to render lockedPoseRef directly (Change 4 - Bug 1 Fix)
+    - Locate the result phase section in the game loop (around lines 376-378)
+    - Change green skeleton rendering from `displayLockedPoseRef.current` to `lockedPoseRef.current`
+    - This renders the green skeleton at its ORIGINAL position (not shifted)
+    - _Bug_Condition: isBugCondition_Teleport(input) where green skeleton is rendered during result phase_
+    - _Expected_Behavior: System SHALL render green skeleton at poser's original position (requirements 2.1, 2.2, 2.3, 2.4)_
+    - _Preservation: Must continue to display with reduced opacity (0.5) (requirement 3.6)_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.6_
+
+  - [x] 3.6 Update round transitions to remove unused refs (Change 5 - Cleanup)
+    - Locate round transition logic in `endRound` function (around lines 500-510)
+    - Remove reset for `displayLockedPoseRef.current` (no longer used)
+    - Remove reset for `copierPoseAtLockRef.current` (no longer used)
+    - Add reset for `lastValidPoserPoseRef.current = null;`
     - This ensures clean state for each new round
     - _Bug_Condition: Not directly related to bug condition, but ensures clean state_
     - _Expected_Behavior: System SHALL reset all pose references between rounds_
-    - _Preservation: Must continue to reset existing pose refs as before (requirement 3.5)_
-    - _Requirements: 3.5_
+    - _Preservation: Must continue to reset existing pose refs as before (requirement 3.4)_
+    - _Requirements: 3.4_
 
-  - [ ] 3.5 Verify bug condition exploration test now passes
-    - **Property 1: Expected Behavior** - Green Skeleton Always Visible
+  - [x] 3.7 Remove unused functions and refs (Change 6 - Cleanup)
+    - Remove `buildDisplayLockedPose` function (around lines 135-143) - no longer needed
+    - Remove `displayLockedPoseRef` ref declaration (around line 230) - no longer needed
+    - Remove `copierPoseAtLockRef` ref declaration (around line 230) - no longer needed
+    - These are no longer used after removing the pose shifting logic
+    - _Bug_Condition: Not directly related to bug condition, but removes dead code_
+    - _Expected_Behavior: Clean up unused code_
+    - _Preservation: Must not affect any existing functionality_
+    - _Requirements: None (cleanup only)_
+
+  - [x] 3.8 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - Green Skeleton at Original Position and Always Visible
     - **IMPORTANT**: Re-run the SAME test from task 1 - do NOT write a new test
     - The test from task 1 encodes the expected behavior
     - When this test passes, it confirms the expected behavior is satisfied
     - Run bug condition exploration test from step 1
-    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed)
+    - **EXPECTED OUTCOME**: Test PASSES (confirms all three bugs are fixed)
     - Verify that:
-      - Green skeleton is visible even when poses are null at lock time
-      - System uses last valid poser pose when current pose is null
-      - System uses default position when copier pose is null
-      - Green skeleton stays frozen throughout copying phase
-    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
+      - Green skeleton stays at poser's ORIGINAL position (no teleportation to copier's side)
+      - Green skeleton is visible even when poses are null at lock time (uses last valid pose)
+      - Only poser's skeleton is visible during locking phase (copier's skeleton is hidden)
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10_
 
-  - [ ] 3.6 Verify preservation tests still pass
+  - [x] 3.9 Verify preservation tests still pass
     - **Property 2: Preservation** - Existing Behavior Unchanged
     - **IMPORTANT**: Re-run the SAME tests from task 2 - do NOT write new tests
     - Run preservation property tests from step 2
     - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
     - Confirm all tests still pass after fix:
-      - Both players see their own skeletons during locking phase
       - Copier's live skeleton renders in yellow during copying phase
       - Match percentage calculation unchanged
       - Green skeleton has glow effect
       - Round transitions reset all pose refs
       - Temporal smoothing unchanged
       - Result phase display unchanged
+      - Buffer phase display unchanged
+      - Pose splitting unchanged
     - Verify no regressions in existing functionality
 
-- [ ] 4. Checkpoint - Ensure all tests pass
+- [x] 4. Checkpoint - Ensure all tests pass
   - Run all tests (bug condition + preservation)
+  - Verify green skeleton stays at poser's original position (no teleportation)
   - Verify green skeleton is visible and frozen in all scenarios
+  - Verify only poser's skeleton is visible during locking phase
   - Verify no regressions in existing functionality
   - Test full game flow with simulated pose detection failures
   - Ensure all tests pass, ask the user if questions arise
