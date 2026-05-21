@@ -1,16 +1,16 @@
-# React + Vite
+# Be The Meme
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Be The Meme is a web-based interactive game that features pose detection and typing race. Developed for Google Developer Student Club UTP (GDSC-UTP) booth in Campus Venture 2026 (CAVE26) event hosted by Universiti Teknologi Petronas (UTP).
 
-Currently, two official plugins are available:
+### Games available :
+1. Be The meme
+- Players has to pose based on the meme image appeared on the screen to get points
+2. Typing Race
+- Players have to type displayed code as fast as they can and compete with other to get the highscore
+3. Mirror Match (2-Player Game)
+- For every round, one player will strike a pose, another player will have to follow the pose.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-## React Compiler
+## This solution is built on React + Vite application with gesture detection model from Mediapipe.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+This model is free to use. Contributions are welcome.
